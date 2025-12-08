@@ -1,0 +1,20 @@
+# Binaries
+# Created by go build
+/example
+*.exe
+*.test
+*.prof
+
+# Vendor directory
+vendor/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
