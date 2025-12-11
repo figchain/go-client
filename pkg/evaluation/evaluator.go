@@ -94,7 +94,7 @@ func (e *RuleBasedEvaluator) matchesCondition(condition model.Condition, context
 		if len(condition.Values) > 0 {
 			return val != condition.Values[0]
 		}
-		return true
+		return false
 	case "IN":
 		return slices.Contains(condition.Values, val)
 	case "NOT_IN":

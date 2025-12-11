@@ -272,7 +272,7 @@ func (c *Client) RegisterListener(key string, prototype AvroRecord, callback fun
 		// Create new instance of prototype type using reflection
 		// prototype should be a pointer to a struct
 		t := reflect.TypeOf(prototype)
-		if t.Kind() == reflect.Ptr {
+		if t.Kind() == reflect.Pointer {
 			t = t.Elem()
 		}
 		targetVal := reflect.New(t)
@@ -292,6 +292,8 @@ func (c *Client) RegisterListener(key string, prototype AvroRecord, callback fun
 		// Callback with the new object (cast back to interface)
 		if record, ok := target.(AvroRecord); ok {
 			callback(record)
+		} else {
+			log.Printf("Listener callback failed for key %s: created object of type %T does not implement AvroRecord", key, target)
 		}
 	}
 

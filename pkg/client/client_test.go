@@ -61,13 +61,19 @@ func TestClient_GetFig(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/data/initial" {
 			schema := getRespSchema("InitialFetchResponse")
-			data, _ := avro.Marshal(schema, mockInitialResp)
+			data, err := avro.Marshal(schema, mockInitialResp)
+			if err != nil {
+				t.Fatalf("failed to marshal mock response: %v", err)
+			}
 			w.Write(data)
 			return
 		}
 		if r.URL.Path == "/data/updates" {
 			schema := getRespSchema("UpdateFetchResponse")
-			data, _ := avro.Marshal(schema, &model.UpdateFetchResponse{Cursor: "1"})
+			data, err := avro.Marshal(schema, &model.UpdateFetchResponse{Cursor: "1"})
+			if err != nil {
+				t.Fatalf("failed to marshal mock response: %v", err)
+			}
 			w.Write(data)
 			return
 		}

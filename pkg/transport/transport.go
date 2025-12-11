@@ -44,21 +44,7 @@ func (t *HTTPTransport) FetchInitial(ctx context.Context, req *model.InitialFetc
 		return nil, fmt.Errorf("failed to parse schema: %w", err)
 	}
 
-	var reqSchema avro.Schema
-	if union, ok := scheme.(*avro.UnionSchema); ok {
-		for _, s := range union.Types() {
-			if ns, ok := s.(avro.NamedSchema); ok {
-				if ns.FullName() == "io.figchain.avro.model.InitialFetchRequest" || ns.Name() == "InitialFetchRequest" {
-					reqSchema = s
-					break
-				}
-			}
-		}
-	}
-
-	if reqSchema == nil {
-		reqSchema = scheme
-	}
+	reqSchema := findSchemaByName(scheme, "InitialFetchRequest")
 
 	reqBytes, err := avro.Marshal(reqSchema, req)
 	if err != nil {
@@ -70,20 +56,7 @@ func (t *HTTPTransport) FetchInitial(ctx context.Context, req *model.InitialFetc
 		return nil, err
 	}
 
-	var respSchema avro.Schema
-	if union, ok := scheme.(*avro.UnionSchema); ok {
-		for _, s := range union.Types() {
-			if ns, ok := s.(avro.NamedSchema); ok {
-				if ns.FullName() == "io.figchain.avro.model.InitialFetchResponse" || ns.Name() == "InitialFetchResponse" {
-					respSchema = s
-					break
-				}
-			}
-		}
-	}
-	if respSchema == nil {
-		respSchema = scheme
-	}
+	respSchema := findSchemaByName(scheme, "InitialFetchResponse")
 
 	var resp model.InitialFetchResponse
 	if err := avro.Unmarshal(respSchema, respBytes, &resp); err != nil {
@@ -99,21 +72,7 @@ func (t *HTTPTransport) FetchUpdate(ctx context.Context, req *model.UpdateFetchR
 		return nil, fmt.Errorf("failed to parse schema: %w", err)
 	}
 
-	var reqSchema avro.Schema
-	if union, ok := scheme.(*avro.UnionSchema); ok {
-		for _, s := range union.Types() {
-			if ns, ok := s.(avro.NamedSchema); ok {
-				name := ns.FullName()
-				if name == "io.figchain.avro.model.UpdateFetchRequest" || ns.Name() == "UpdateFetchRequest" {
-					reqSchema = s
-					break
-				}
-			}
-		}
-	}
-	if reqSchema == nil {
-		reqSchema = scheme
-	}
+	reqSchema := findSchemaByName(scheme, "UpdateFetchRequest")
 
 	reqBytes, err := avro.Marshal(reqSchema, req)
 	if err != nil {
@@ -125,21 +84,7 @@ func (t *HTTPTransport) FetchUpdate(ctx context.Context, req *model.UpdateFetchR
 		return nil, err
 	}
 
-	var respSchema avro.Schema
-	if union, ok := scheme.(*avro.UnionSchema); ok {
-		for _, s := range union.Types() {
-			if ns, ok := s.(avro.NamedSchema); ok {
-				name := ns.FullName()
-				if name == "io.figchain.avro.model.UpdateFetchResponse" || ns.Name() == "UpdateFetchResponse" {
-					respSchema = s
-					break
-				}
-			}
-		}
-	}
-	if respSchema == nil {
-		respSchema = scheme
-	}
+	respSchema := findSchemaByName(scheme, "UpdateFetchResponse")
 
 	var resp model.UpdateFetchResponse
 	if err := avro.Unmarshal(respSchema, respBytes, &resp); err != nil {
@@ -184,4 +129,17 @@ func (t *HTTPTransport) doRequest(ctx context.Context, urlStr string, reqBytes [
 	}
 
 	return bodyBytes, nil
+}
+
+func findSchemaByName(root avro.Schema, name string) avro.Schema {
+	if union, ok := root.(*avro.UnionSchema); ok {
+		for _, s := range union.Types() {
+			if ns, ok := s.(avro.NamedSchema); ok {
+				if ns.FullName() == "io.figchain.avro.model."+name || ns.Name() == name {
+					return s
+				}
+			}
+		}
+	}
+	return root
 }
