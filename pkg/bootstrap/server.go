@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/figchain/go-client/pkg/model"
@@ -13,15 +14,24 @@ import (
 type ServerStrategy struct {
 	transport     transport.Transport
 	environmentID string
-	asOf          string
+	asOf          *time.Time
 }
 
 // NewServerStrategy creates a new ServerStrategy.
 func NewServerStrategy(tr transport.Transport, environmentID string, asOf string) *ServerStrategy {
+	var asOfTime *time.Time
+	if asOf != "" {
+		t, err := time.Parse(time.RFC3339, asOf)
+		if err == nil {
+			asOfTime = &t
+		} else {
+			log.Printf("Invalid AsOfTimestamp format ignored: %s", asOf)
+		}
+	}
 	return &ServerStrategy{
 		transport:     tr,
 		environmentID: environmentID,
-		asOf:          asOf,
+		asOf:          asOfTime,
 	}
 }
 
@@ -34,12 +44,7 @@ func (s *ServerStrategy) Bootstrap(ctx context.Context, namespaces []string) (*R
 		req := &model.InitialFetchRequest{
 			Namespace:     ns,
 			EnvironmentID: s.environmentID,
-		}
-		if s.asOf != "" {
-			t, err := time.Parse(time.RFC3339, s.asOf)
-			if err == nil {
-				req.AsOfTimestamp = &t
-			}
+			AsOfTimestamp: s.asOf,
 		}
 
 		resp, err := s.transport.FetchInitial(ctx, req)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -53,27 +54,19 @@ func NewS3VaultFetcher(ctx context.Context, cfg *fc_config.Config) (*S3VaultFetc
 
 // FetchBackup fetches the backup file from S3 for a given key fingerprint.
 func (f *S3VaultFetcher) FetchBackup(ctx context.Context, keyFingerprint string) (io.ReadCloser, error) {
-	key := "backup.json"
-	if keyFingerprint != "" {
-		key = keyFingerprint + "/" + key
-	}
-
+	key := path.Join(keyFingerprint, "backup.json")
 	if f.prefix != "" {
-		if strings.HasSuffix(f.prefix, "/") {
-			key = f.prefix + key
-		} else {
-			key = f.prefix + "/" + key
-		}
+		key = path.Join(f.prefix, key)
 	}
 
-	key = strings.TrimPrefix(key, "/")
+	key = strings.TrimPrefix(key, "/") // Ensure no leading slash for S3 key if prefix was empty/root
 
 	resp, err := f.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(f.bucketName),
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch backup from S3: %w", err)
+		return nil, err
 	}
 
 	return resp.Body, nil

@@ -2,7 +2,9 @@ package bootstrap
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"maps"
 
 	"github.com/figchain/go-client/pkg/model"
 	"github.com/figchain/go-client/pkg/transport"
@@ -59,63 +61,59 @@ func (s *HybridStrategy) Bootstrap(ctx context.Context, namespaces []string) (*R
 		}
 	}
 
-	// 3. Fetch full initial data for missing namespaces
+	// 3. Fetch missing from Server
 	if len(missingNamespaces) > 0 {
 		log.Printf("Fetching missing namespaces from server: %v", missingNamespaces)
 		serverResult, err := s.serverStrategy.Bootstrap(ctx, missingNamespaces)
 		if err != nil {
-			log.Printf("Server bootstrap failed for missing namespaces: %v", err)
-			// Partial failure
-		} else {
-			if serverResult.FigFamilies != nil {
-				allFamilies = append(allFamilies, serverResult.FigFamilies...)
-			}
-			if serverResult.Cursors != nil {
-				for k, v := range serverResult.Cursors {
-					finalCursors[k] = v
-				}
-			}
+			return nil, fmt.Errorf("failed to fetch missing namespaces from server: %w", err)
+		}
+		if serverResult.FigFamilies != nil {
+			allFamilies = append(allFamilies, serverResult.FigFamilies...)
+		}
+		if serverResult.Cursors != nil {
+			maps.Copy(finalCursors, serverResult.Cursors)
 		}
 	}
 
 	// 4. Catch up from Server for namespaces that WERE in Vault
+	// Create a set of missing namespaces for O(1) lookup
+	missingMap := make(map[string]struct{}, len(missingNamespaces))
+	for _, ns := range missingNamespaces {
+		missingMap[ns] = struct{}{}
+	}
+
+	// 4. Catch up
 	for _, ns := range namespaces {
-		cursor, wasInVault := finalCursors[ns]
-		if wasInVault {
-			// Check if it was ONLY in vault (meaning it wasn't just fetched from server)
-			// Actually, if it's in finalCursors, we need to know if it needs catch-up.
-			// Namespaces from serverStrategy are fresh.
-			// Namespaces from vaultStrategy are stale.
+		_, isFresh := missingMap[ns]
+		if isFresh {
+			// Just fetched from server, so it's fresh
+			continue
+		}
 
-			// We can check if it was in missingNamespaces to skip
-			isFresh := false
-			for _, missing := range missingNamespaces {
-				if missing == ns {
-					isFresh = true
-					break
-				}
-			}
+		// It was in vault (or potentially missing but not fetched? No, missingNamespaces handles that)
+		// If it was in vault, it is in finalCursors.
+		cursor, ok := finalCursors[ns]
+		if !ok {
+			// Should have been missingNamespaces if not in finalCursors
+			continue
+		}
 
-			if !isFresh {
-				// Needs catch-up
-				req := &model.UpdateFetchRequest{
-					Namespace:     ns,
-					Cursor:        cursor,
-					EnvironmentID: s.environmentID,
-				}
-				resp, err := s.transport.FetchUpdate(ctx, req)
-				if err != nil {
-					log.Printf("Failed to catch up for %s: %v", ns, err)
-					continue
-				}
+		req := &model.UpdateFetchRequest{
+			Namespace:     ns,
+			Cursor:        cursor,
+			EnvironmentID: s.environmentID,
+		}
+		resp, err := s.transport.FetchUpdate(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to catch up for %s: %w", ns, err)
+		}
 
-				if len(resp.FigFamilies) > 0 {
-					allFamilies = append(allFamilies, resp.FigFamilies...)
-				}
-				if resp.Cursor != "" {
-					finalCursors[ns] = resp.Cursor
-				}
-			}
+		if len(resp.FigFamilies) > 0 {
+			allFamilies = append(allFamilies, resp.FigFamilies...)
+		}
+		if resp.Cursor != "" {
+			finalCursors[ns] = resp.Cursor
 		}
 	}
 

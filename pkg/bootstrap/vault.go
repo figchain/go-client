@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 
+	"github.com/figchain/go-client/pkg/model"
 	"github.com/figchain/go-client/pkg/vault"
 )
 
@@ -37,8 +38,21 @@ func (s *VaultStrategy) Bootstrap(ctx context.Context, namespaces []string) (*Re
 		}
 	}
 
+	// Filter Items to relevant namespaces
+	requestedNamespaces := make(map[string]struct{}, len(namespaces))
+	for _, ns := range namespaces {
+		requestedNamespaces[ns] = struct{}{}
+	}
+
+	filteredFamilies := make([]model.FigFamily, 0)
+	for _, item := range payload.Items {
+		if _, ok := requestedNamespaces[item.Definition.Namespace]; ok {
+			filteredFamilies = append(filteredFamilies, item)
+		}
+	}
+
 	return &Result{
-		FigFamilies: payload.Items,
+		FigFamilies: filteredFamilies,
 		Cursors:     cursors,
 	}, nil
 }

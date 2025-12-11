@@ -82,14 +82,13 @@ func New(opts ...config.Option) (*Client, error) {
 			strategy = vaultStrategy
 		case config.BootstrapStrategyHybrid:
 			strategy = bootstrap.NewHybridStrategy(vaultStrategy, serverStrategy, tr, cfg.EnvironmentID)
-		case config.BootstrapStrategyServerFirst:
+		case config.BootstrapStrategyServerFirst, "":
 			strategy = bootstrap.NewFallbackStrategy(serverStrategy, vaultStrategy)
+		case config.BootstrapStrategyServer:
+			strategy = serverStrategy
 		default:
-			if cfg.BootstrapStrategy == config.BootstrapStrategyServerFirst || cfg.BootstrapStrategy == "" {
-				strategy = bootstrap.NewFallbackStrategy(serverStrategy, vaultStrategy)
-			} else {
-				strategy = serverStrategy
-			}
+			log.Printf("Unknown bootstrap strategy %q, using Default (ServerFirst with Fallback)", cfg.BootstrapStrategy)
+			strategy = bootstrap.NewFallbackStrategy(serverStrategy, vaultStrategy)
 		}
 	} else {
 		strategy = serverStrategy
