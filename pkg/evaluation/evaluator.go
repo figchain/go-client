@@ -80,42 +80,62 @@ func (e *RuleBasedEvaluator) matchesRule(rule model.Rule, context *EvaluationCon
 func (e *RuleBasedEvaluator) matchesCondition(condition model.Condition, context *EvaluationContext) bool {
 	val, ok := context.Attributes[condition.Variable]
 	if !ok {
-		// If variable is missing, condition fails (unless operator handles missing, but usually fails)
 		return false
 	}
 
+	// Generated bindings use string for Operator (enum)
 	switch condition.Operator {
-	case model.OperatorEquals:
-		return slices.Contains(condition.Values, val)
-	case model.OperatorNotEquals:
-		return !slices.Contains(condition.Values, val)
-	case model.OperatorIn:
-		return slices.Contains(condition.Values, val)
-	case model.OperatorNotIn:
-		return !slices.Contains(condition.Values, val)
-	case model.OperatorContains:
-		for _, v := range condition.Values {
-			if strings.Contains(val, v) {
-				return true
-			}
+	case "EQUALS":
+		if len(condition.Values) > 0 {
+			return val == condition.Values[0]
 		}
 		return false
-	case model.OperatorGreaterThan:
+	case "NOT_EQUALS":
+		if len(condition.Values) > 0 {
+			return val != condition.Values[0]
+		}
+		return false
+	case "IN":
+		return slices.Contains(condition.Values, val)
+	case "NOT_IN":
+		return !slices.Contains(condition.Values, val)
+	case "CONTAINS":
+		if len(condition.Values) > 0 {
+			return strings.Contains(val, condition.Values[0])
+		}
+		return false
+	case "GREATER_THAN":
 		if len(condition.Values) != 1 {
 			return false
 		}
 		return e.compare(val, condition.Values[0]) > 0
-	case model.OperatorLessThan:
+	case "LESS_THAN":
 		if len(condition.Values) != 1 {
 			return false
 		}
 		return e.compare(val, condition.Values[0]) < 0
-	case model.OperatorSplit:
-		// TODO: Implement traffic splitting
-		return false
+	case "SPLIT":
+		if len(condition.Values) == 0 {
+			return false
+		}
+		threshold, err := strconv.Atoi(condition.Values[0])
+		if err != nil {
+			return false
+		}
+		return e.getBucket(val) < threshold
 	default:
 		return false
 	}
+}
+
+func (e *RuleBasedEvaluator) getBucket(key string) int {
+	hash := uint32(0x811c9dc5)
+	const prime = 0x01000193
+	for i := 0; i < len(key); i++ {
+		hash ^= uint32(key[i])
+		hash *= prime
+	}
+	return int(hash % 100)
 }
 
 func (e *RuleBasedEvaluator) compare(a, b string) int {
