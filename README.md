@@ -4,6 +4,10 @@ Official Go client library for [FigChain](https://figchain.io) configuration man
 
 ## Installation
 
+<a href="https://github.com/figchain/go-client/releases">
+	<img src="https://img.shields.io/github/v/release/figchain/go-client" alt="GitHub Release" />
+</a>
+
 ```bash
 go get github.com/figchain/go-client
 ```
