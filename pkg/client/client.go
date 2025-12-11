@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"reflect"
 	"sync"
 	"time"
 
@@ -30,6 +31,7 @@ type Client struct {
 	transport        transport.Transport
 	namespaceCursors map[string]string
 	watchers         map[string][]chan model.FigFamily
+	listeners        map[string][]func(model.FigFamily)
 	mu               sync.RWMutex
 	wg               sync.WaitGroup
 	closeCh          chan struct{}
@@ -58,6 +60,7 @@ func New(opts ...config.Option) (*Client, error) {
 		transport:        tr,
 		namespaceCursors: make(map[string]string),
 		watchers:         make(map[string][]chan model.FigFamily),
+		listeners:        make(map[string][]func(model.FigFamily)),
 		closeCh:          make(chan struct{}),
 	}
 
@@ -175,14 +178,13 @@ func (c *Client) fetchInitial(ctx context.Context) error {
 
 func (c *Client) pollLoop() {
 	defer c.wg.Done()
-	ticker := time.NewTicker(c.cfg.PollingInterval)
-	defer ticker.Stop()
 
 	for {
 		select {
 		case <-c.closeCh:
 			return
-		case <-ticker.C:
+		default:
+			// Perform long poll
 			c.pollUpdates()
 		}
 	}
@@ -203,13 +205,27 @@ func (c *Client) pollUpdates() {
 		resp, err := c.transport.FetchUpdate(context.Background(), req)
 		if err != nil {
 			log.Printf("Failed to fetch updates for %s: %v", ns, err)
-			continue
+			// Prevent tight loop on error (backoff)
+			select {
+			case <-c.closeCh:
+				return
+			case <-time.After(c.cfg.PollingInterval):
+				continue
+			}
 		}
 
 		if len(resp.FigFamilies) > 0 {
 			c.mu.Lock()
 			for _, ff := range resp.FigFamilies {
 				c.store.Put(ff)
+
+				// Notify type-specific listeners
+				if callbacks, ok := c.listeners[ff.Definition.Key]; ok {
+					for _, cb := range callbacks {
+						cb(ff)
+					}
+				}
+
 				// Notify watchers
 				if chans, ok := c.watchers[ff.Definition.Key]; ok {
 					for _, ch := range chans {
@@ -230,4 +246,54 @@ func (c *Client) pollUpdates() {
 			c.mu.Unlock()
 		}
 	}
+}
+
+// RegisterListener registers a callback for updates to a specific key.
+// The callback is invoked with the deserialized object when an update occurs.
+//
+// IMPORTANT: This feature should be used for SERVER-SCOPED configuration only (e.g. global flags).
+// The update is evaluated with an empty context. If your rules depend on user-specific attributes
+// (like request-scoped context), this listener may receive default values or fail to match rules.
+// For request-scoped configuration, use GetFig() with the appropriate context when needed.
+func (c *Client) RegisterListener(key string, prototype AvroRecord, callback func(AvroRecord)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// We create a wrapper func that handles the logic
+	wrapper := func(ff model.FigFamily) {
+		// Empty context
+		ctx := evaluation.NewEvaluationContext(nil)
+		fig, err := c.evaluator.Evaluate(&ff, ctx)
+		if err != nil || fig == nil {
+			log.Printf("Listener evaluation failed for %s: %v", key, err)
+			return
+		}
+
+		// Create new instance of prototype type using reflection
+		// prototype should be a pointer to a struct
+		t := reflect.TypeOf(prototype)
+		if t.Kind() == reflect.Ptr {
+			t = t.Elem()
+		}
+		targetVal := reflect.New(t)
+		target := targetVal.Interface()
+
+		schema, err := avro.Parse(prototype.Schema())
+		if err != nil {
+			log.Printf("Listener schema parse failed for %s: %v", key, err)
+			return
+		}
+
+		if err := avro.Unmarshal(schema, fig.Payload, target); err != nil {
+			log.Printf("Listener unmarshal failed for %s: %v", key, err)
+			return
+		}
+
+		// Callback with the new object (cast back to interface)
+		if record, ok := target.(AvroRecord); ok {
+			callback(record)
+		}
+	}
+
+	c.listeners[key] = append(c.listeners[key], wrapper)
 }

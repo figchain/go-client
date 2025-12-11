@@ -2,12 +2,13 @@ package client_test
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/hamba/avro/v2"
 
 	"github.com/figchain/go-client/pkg/client"
 	"github.com/figchain/go-client/pkg/config"
@@ -28,6 +29,20 @@ func (m *MockAvroRecord) Schema() string {
 	}`
 }
 
+func getRespSchema(name string) avro.Schema {
+	scheme, _ := avro.Parse(model.Schema)
+	if union, ok := scheme.(*avro.UnionSchema); ok {
+		for _, s := range union.Types() {
+			if ns, ok := s.(avro.NamedSchema); ok {
+				if ns.FullName() == "io.figchain.avro.model."+name || ns.Name() == name {
+					return s
+				}
+			}
+		}
+	}
+	return scheme
+}
+
 func TestClient_GetFig(t *testing.T) {
 	// Setup mock server
 	mockInitialResp := &model.InitialFetchResponse{
@@ -44,12 +59,16 @@ func TestClient_GetFig(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/fig/initial" {
-			json.NewEncoder(w).Encode(mockInitialResp)
+		if r.URL.Path == "/data/initial" {
+			schema := getRespSchema("InitialFetchResponse")
+			data, _ := avro.Marshal(schema, mockInitialResp)
+			w.Write(data)
 			return
 		}
-		if r.URL.Path == "/v1/fig/updates" {
-			json.NewEncoder(w).Encode(&model.UpdateFetchResponse{Cursor: "1"})
+		if r.URL.Path == "/data/updates" {
+			schema := getRespSchema("UpdateFetchResponse")
+			data, _ := avro.Marshal(schema, &model.UpdateFetchResponse{Cursor: "1"})
+			w.Write(data)
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -101,18 +120,21 @@ func TestClient_Watch(t *testing.T) {
 	}{}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/fig/initial" {
-			json.NewEncoder(w).Encode(mockInitialResp)
+		if r.URL.Path == "/data/initial" {
+			schema := getRespSchema("InitialFetchResponse")
+			data, _ := avro.Marshal(schema, mockInitialResp)
+			w.Write(data)
 			return
 		}
-		if r.URL.Path == "/v1/fig/updates" {
+		if r.URL.Path == "/data/updates" {
 			updateMutex.Lock()
 			defer updateMutex.Unlock()
 
+			schema := getRespSchema("UpdateFetchResponse")
 			if !params.updateServed {
 				// Serve an update
 				params.updateServed = true
-				json.NewEncoder(w).Encode(&model.UpdateFetchResponse{
+				resp := &model.UpdateFetchResponse{
 					Cursor: "2",
 					FigFamilies: []model.FigFamily{
 						{
@@ -123,10 +145,14 @@ func TestClient_Watch(t *testing.T) {
 							DefaultVersion: ptr("v2"),
 						},
 					},
-				})
+				}
+				data, _ := avro.Marshal(schema, resp)
+				w.Write(data)
 			} else {
 				// No more updates
-				json.NewEncoder(w).Encode(&model.UpdateFetchResponse{Cursor: "2"})
+				resp := &model.UpdateFetchResponse{Cursor: "2"}
+				data, _ := avro.Marshal(schema, resp)
+				w.Write(data)
 			}
 			return
 		}

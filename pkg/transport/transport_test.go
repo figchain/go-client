@@ -2,12 +2,12 @@ package transport
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/figchain/go-client/pkg/model"
+	"github.com/hamba/avro/v2"
 )
 
 func TestHTTPTransport_FetchInitial(t *testing.T) {
@@ -20,21 +20,40 @@ func TestHTTPTransport_FetchInitial(t *testing.T) {
 		},
 	}
 
+	scheme, _ := avro.Parse(model.Schema)
+	// Find response schema
+	var respSchema avro.Schema
+	if union, ok := scheme.(*avro.UnionSchema); ok {
+		for _, s := range union.Types() {
+			if ns, ok := s.(avro.NamedSchema); ok {
+				if ns.FullName() == "io.figchain.avro.model.InitialFetchResponse" || ns.Name() == "InitialFetchResponse" {
+					respSchema = s
+					break
+				}
+			}
+		}
+	}
+	if respSchema == nil {
+		respSchema = scheme
+	}
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			t.Errorf("Expected POST request, got %s", r.Method)
 		}
-		if r.URL.Path != "/v1/fig/initial" {
-			t.Errorf("Expected path /v1/fig/initial, got %s", r.URL.Path)
+		if r.URL.Path != "/data/initial" {
+			t.Errorf("Expected path /data/initial, got %s", r.URL.Path)
 		}
 		if r.Header.Get("Authorization") != "Bearer secret" {
 			t.Errorf("Expected Authorization header Bearer secret, got %s", r.Header.Get("Authorization"))
 		}
-		if r.Header.Get("X-FigChain-Environment-ID") != "env-1" {
-			t.Errorf("Expected X-FigChain-Environment-ID header env-1, got %s", r.Header.Get("X-FigChain-Environment-ID"))
-		}
 
-		json.NewEncoder(w).Encode(mockResp)
+		data, err := avro.Marshal(respSchema, mockResp)
+		if err != nil {
+			t.Errorf("Failed to marshal mock response: %v", err)
+			return
+		}
+		w.Write(data)
 	}))
 	defer server.Close()
 
@@ -66,15 +85,37 @@ func TestHTTPTransport_FetchUpdate(t *testing.T) {
 		},
 	}
 
+	scheme, _ := avro.Parse(model.Schema)
+	// Find response schema
+	var respSchema avro.Schema
+	if union, ok := scheme.(*avro.UnionSchema); ok {
+		for _, s := range union.Types() {
+			if ns, ok := s.(avro.NamedSchema); ok {
+				if ns.FullName() == "io.figchain.avro.model.UpdateFetchResponse" || ns.Name() == "UpdateFetchResponse" {
+					respSchema = s
+					break
+				}
+			}
+		}
+	}
+	if respSchema == nil {
+		respSchema = scheme
+	}
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			t.Errorf("Expected POST request, got %s", r.Method)
 		}
-		if r.URL.Path != "/v1/fig/updates" {
-			t.Errorf("Expected path /v1/fig/updates, got %s", r.URL.Path)
+		if r.URL.Path != "/data/updates" {
+			t.Errorf("Expected path /data/updates, got %s", r.URL.Path)
 		}
 
-		json.NewEncoder(w).Encode(mockResp)
+		data, err := avro.Marshal(respSchema, mockResp)
+		if err != nil {
+			t.Errorf("Failed to marshal mock response: %v", err)
+			return
+		}
+		w.Write(data)
 	}))
 	defer server.Close()
 

@@ -26,7 +26,7 @@ func TestRuleBasedEvaluator_Evaluate(t *testing.T) {
 				Conditions: []model.Condition{
 					{
 						Variable: "user_id",
-						Operator: model.OperatorEquals,
+						Operator: "EQUALS",
 						Values:   []string{"123"},
 					},
 				},
