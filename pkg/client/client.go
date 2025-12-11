@@ -11,11 +11,13 @@ import (
 
 	"github.com/hamba/avro/v2"
 
+	"github.com/figchain/go-client/pkg/bootstrap"
 	"github.com/figchain/go-client/pkg/config"
 	"github.com/figchain/go-client/pkg/evaluation"
 	"github.com/figchain/go-client/pkg/model"
 	"github.com/figchain/go-client/pkg/store"
 	"github.com/figchain/go-client/pkg/transport"
+	"github.com/figchain/go-client/pkg/vault"
 )
 
 // AvroRecord is an interface that provides the Avro schema.
@@ -64,10 +66,54 @@ func New(opts ...config.Option) (*Client, error) {
 		closeCh:          make(chan struct{}),
 	}
 
-	// Initial fetch
-	if err := c.fetchInitial(context.Background()); err != nil {
-		return nil, fmt.Errorf("failed to fetch initial data: %w", err)
+	// Select Bootstrap Strategy
+	var strategy bootstrap.Strategy
+	serverStrategy := bootstrap.NewServerStrategy(tr, cfg.EnvironmentID, cfg.AsOfTimestamp)
+
+	if cfg.VaultEnabled {
+		vs, err := vault.NewDefaultVaultService(context.Background(), cfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create vault service: %w", err)
+		}
+		vaultStrategy := bootstrap.NewVaultStrategy(vs)
+
+		switch cfg.BootstrapStrategy {
+		case config.BootstrapStrategyVault:
+			strategy = vaultStrategy
+		case config.BootstrapStrategyHybrid:
+			strategy = bootstrap.NewHybridStrategy(vaultStrategy, serverStrategy, tr, cfg.EnvironmentID)
+		case config.BootstrapStrategyServerFirst:
+			strategy = bootstrap.NewFallbackStrategy(serverStrategy, vaultStrategy)
+		default:
+			if cfg.BootstrapStrategy == config.BootstrapStrategyServerFirst || cfg.BootstrapStrategy == "" {
+				strategy = bootstrap.NewFallbackStrategy(serverStrategy, vaultStrategy)
+			} else {
+				strategy = serverStrategy
+			}
+		}
+	} else {
+		strategy = serverStrategy
 	}
+
+	log.Printf("Bootstrapping with strategy: %T", strategy)
+
+	// Execute Bootstrap
+	result, err := strategy.Bootstrap(context.Background(), cfg.Namespaces)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap failed: %w", err)
+	}
+
+	// Populate Store
+	for _, ff := range result.FigFamilies {
+		c.store.Put(ff)
+	}
+
+	// Set Cursors
+	c.mu.Lock()
+	for ns, cursor := range result.Cursors {
+		c.namespaceCursors[ns] = cursor
+	}
+	c.mu.Unlock()
 
 	// Start polling
 	c.wg.Add(1)
@@ -147,35 +193,6 @@ func (c *Client) Watch(ctx context.Context, key string) <-chan model.FigFamily {
 
 	return ch
 }
-
-func (c *Client) fetchInitial(ctx context.Context) error {
-	for _, ns := range c.cfg.Namespaces {
-		req := &model.InitialFetchRequest{
-			Namespace:     ns,
-			EnvironmentID: c.cfg.EnvironmentID,
-		}
-		if c.cfg.AsOfTimestamp != "" {
-			t, err := time.Parse(time.RFC3339, c.cfg.AsOfTimestamp)
-			if err == nil {
-				req.AsOfTimestamp = &t
-			}
-		}
-
-		resp, err := c.transport.FetchInitial(ctx, req)
-		if err != nil {
-			return err
-		}
-
-		for _, ff := range resp.FigFamilies {
-			c.store.Put(ff)
-		}
-		c.mu.Lock()
-		c.namespaceCursors[ns] = resp.Cursor
-		c.mu.Unlock()
-	}
-	return nil
-}
-
 func (c *Client) pollLoop() {
 	defer c.wg.Done()
 
