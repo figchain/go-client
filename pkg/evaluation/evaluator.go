@@ -1,6 +1,7 @@
 package evaluation
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"slices"
@@ -10,29 +11,76 @@ import (
 	"github.com/figchain/go-client/pkg/model"
 )
 
-// EvaluationContext holds the context for rule evaluation.
+// EvaluationContext holds the context for rule evaluation and implements context.Context.
+//
+// This context is request-scoped and should be created per operation, not stored long-term.
+// By embedding context.Context, it provides both evaluation attributes and standard context
+// lifecycle management (timeouts, cancellation, request-scoped values).
+//
+// Example usage:
+//
+//	// Simple usage with default background context
+//	ctx := evaluation.NewEvaluationContext(map[string]string{
+//		"user_id": "123",
+//		"region": "us-west",
+//	})
+//	err := client.GetFig("my-config", &config, ctx)
+//
+//	// With timeout
+//	baseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+//	defer cancel()
+//	ctx := evaluation.NewEvaluationContextWithContext(baseCtx, map[string]string{
+//		"user_id": "123",
+//	})
+//	err := client.GetFig("my-config", &config, ctx)
+//
+//	// In HTTP handlers (inherits request cancellation)
+//	ctx := evaluation.NewEvaluationContextWithContext(r.Context(), map[string]string{
+//		"user_id": getUserID(r),
+//	})
+//	err := client.GetFig("feature-flags", &config, ctx)
 type EvaluationContext struct {
+	context.Context
 	Attributes map[string]string
 }
 
-// NewEvaluationContext creates a new EvaluationContext.
+// NewEvaluationContext creates a new EvaluationContext with context.Background().
+// The context should be request-scoped and created per operation.
+//
+// For operations that need timeout or cancellation support, use NewEvaluationContextWithContext.
 func NewEvaluationContext(attributes map[string]string) *EvaluationContext {
+	return NewEvaluationContextWithContext(context.Background(), attributes)
+}
+
+// NewEvaluationContextWithContext creates a new EvaluationContext with the given context.
+// This allows you to pass in a parent context for timeout, cancellation, or request-scoped values.
+//
+// The context should be request-scoped and created per operation, not stored long-term.
+// If ctx is nil, context.Background() is used.
+func NewEvaluationContextWithContext(ctx context.Context, attributes map[string]string) *EvaluationContext {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if attributes == nil {
 		attributes = make(map[string]string)
 	}
 	return &EvaluationContext{
+		Context:    ctx,
 		Attributes: attributes,
 	}
 }
 
-// Merge merges another context into this one.
+// Merge merges another context into this one, preserving the original context.Context.
 func (c *EvaluationContext) Merge(other *EvaluationContext) *EvaluationContext {
 	merged := make(map[string]string)
 	maps.Copy(merged, c.Attributes)
 	if other != nil {
 		maps.Copy(merged, other.Attributes)
 	}
-	return &EvaluationContext{Attributes: merged}
+	return &EvaluationContext{
+		Context:    c.Context,
+		Attributes: merged,
+	}
 }
 
 // Evaluator defines the interface for evaluating rollouts.

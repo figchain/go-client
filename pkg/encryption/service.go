@@ -90,9 +90,16 @@ func (s *Service) getNSK(ctx context.Context, namespace, keyID string) ([]byte, 
 	}
 
 	if matchingKey == nil {
-		if len(nsKeys) > 0 && keyID == "" {
-			// Fallback to first if no ID specified
-			matchingKey = nsKeys[0]
+		if keyID == "" {
+			// If no keyID specified and there's exactly one key, use it
+			if len(nsKeys) == 1 {
+				matchingKey = nsKeys[0]
+			} else if len(nsKeys) > 1 {
+				// Multiple keys exist but fig has no keyID - this is ambiguous and unsafe
+				return nil, fmt.Errorf("namespace %s has %d keys but fig has no keyId specified; cannot determine which key to use", namespace, len(nsKeys))
+			} else {
+				return nil, fmt.Errorf("no keys found for namespace %s", namespace)
+			}
 		} else {
 			return nil, fmt.Errorf("no matching key found for namespace %s and keyId %s", namespace, keyID)
 		}

@@ -196,10 +196,10 @@ func (c *Client) GetFig(key string, target any, ctx *evaluation.EvaluationContex
 	// Decrypt
 	payload := fig.Payload
 	if c.encryptionService != nil && fig.IsEncrypted {
-		p, err := c.encryptionService.Decrypt(context.Background(), fig, namespace)
+		p, err := c.encryptionService.Decrypt(ctx, fig, namespace)
 		if err != nil {
 			log.Printf("Failed to decrypt fig with key '%s' in namespace '%s': %v", key, namespace, err)
-return fmt.Errorf("failed to decrypt fig with key '%s' in namespace '%s': %w", key, namespace, err)
+			return fmt.Errorf("failed to decrypt fig with key '%s' in namespace '%s': %w", key, namespace, err)
 		}
 		payload = p
 	}
@@ -332,7 +332,7 @@ func (c *Client) RegisterListener(key string, prototype AvroRecord, callback fun
 
 	// We create a wrapper func that handles the logic
 	wrapper := func(ff model.FigFamily) {
-		// Empty context
+		// Empty evaluation context (embeds context.Background())
 		ctx := evaluation.NewEvaluationContext(nil)
 		fig, err := c.evaluator.Evaluate(&ff, ctx)
 		if err != nil || fig == nil {
@@ -357,7 +357,8 @@ func (c *Client) RegisterListener(key string, prototype AvroRecord, callback fun
 
 		payload := fig.Payload
 		if c.encryptionService != nil && fig.IsEncrypted {
-			p, err := c.encryptionService.Decrypt(context.Background(), fig, ff.Definition.Namespace)
+			// Use the evaluation context (which implements context.Context)
+			p, err := c.encryptionService.Decrypt(ctx, fig, ff.Definition.Namespace)
 			if err != nil {
 				log.Printf("Listener decryption failed for %s: %v", key, err)
 				return
