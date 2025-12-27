@@ -199,7 +199,7 @@ func (c *Client) GetFig(key string, target any, ctx *evaluation.EvaluationContex
 		p, err := c.encryptionService.Decrypt(context.Background(), fig, namespace)
 		if err != nil {
 			log.Printf("Failed to decrypt fig with key '%s' in namespace '%s': %v", key, namespace, err)
-			return nil // Return nil instead of error for resilience
+return fmt.Errorf("failed to decrypt fig with key '%s' in namespace '%s': %w", key, namespace, err)
 		}
 		payload = p
 	}
