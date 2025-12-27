@@ -75,7 +75,5 @@ func (p *PrivateKeyTokenProvider) GetToken() (string, error) {
 		return "", fmt.Errorf("failed to sign token: %w", err)
 	}
 
-	// fmt.Printf("DEBUG: Generated JWT: %s\n", signedToken)
-	// fmt.Printf("DEBUG: Generated JWT: %s\n", signedToken)
 	return signedToken, nil
 }

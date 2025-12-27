@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"sync"
 
 	"github.com/figchain/go-client/pkg/model"
@@ -58,7 +59,7 @@ func (s *Service) Decrypt(ctx context.Context, fig *model.Fig, namespace string)
 		return nil, fmt.Errorf("decrypt payload: %w", err)
 	}
 
-	fmt.Printf("DEBUG Decryption: encrypted=%d bytes, decrypted=%d bytes, hex=%x\n",
+	log.Printf("DEBUG Decryption: encrypted=%d bytes, decrypted=%d bytes, hex=%x\n",
 		len(fig.Payload), len(payload), payload)
 
 	return payload, nil
