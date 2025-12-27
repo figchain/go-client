@@ -40,14 +40,23 @@ type PrivateKeyTokenProvider struct {
 }
 
 // NewPrivateKeyTokenProvider creates a new PrivateKeyTokenProvider.
+// If tokenTTL is 0, it defaults to 10 minutes.
 func NewPrivateKeyTokenProvider(privateKey *rsa.PrivateKey, serviceAccountID, tenantID, namespace, keyID string) *PrivateKeyTokenProvider {
+	return NewPrivateKeyTokenProviderWithTTL(privateKey, serviceAccountID, tenantID, namespace, keyID, 10*time.Minute)
+}
+
+// NewPrivateKeyTokenProviderWithTTL creates a new PrivateKeyTokenProvider with a custom TTL.
+func NewPrivateKeyTokenProviderWithTTL(privateKey *rsa.PrivateKey, serviceAccountID, tenantID, namespace, keyID string, tokenTTL time.Duration) *PrivateKeyTokenProvider {
+	if tokenTTL == 0 {
+		tokenTTL = 10 * time.Minute
+	}
 	return &PrivateKeyTokenProvider{
 		privateKey:       privateKey,
 		serviceAccountID: serviceAccountID,
 		tenantID:         tenantID,
 		namespace:        namespace,
 		keyID:            keyID,
-		tokenTTL:         10 * time.Minute,
+		tokenTTL:         tokenTTL,
 	}
 }
 

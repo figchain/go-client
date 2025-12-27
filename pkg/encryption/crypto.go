@@ -92,7 +92,7 @@ func UnwrapAESKey(wrappedKey, kek []byte) ([]byte, error) {
 
 	// Check IV (0xA6A6A6A6A6A6A6A6)
 	if binary.BigEndian.Uint64(a) != 0xA6A6A6A6A6A6A6A6 {
-		return nil, errors.New("integrity check failed")
+		return nil, fmt.Errorf("%w: integrity check failed", ErrUnwrap)
 	}
 
 	return r, nil

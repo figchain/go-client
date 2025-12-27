@@ -241,6 +241,13 @@ func WithEncryptionPrivateKeyPath(path string) Option {
 	}
 }
 
+// WithAuthPrivateKeyPath sets the path to the authentication private key.
+func WithAuthPrivateKeyPath(path string) Option {
+	return func(c *Config) {
+		c.AuthPrivateKeyPath = path
+	}
+}
+
 // WithAuthClientID sets the auth client ID.
 func WithAuthClientID(id string) Option {
 	return func(c *Config) {

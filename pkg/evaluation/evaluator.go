@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/figchain/go-client/pkg/model"
 )
@@ -40,7 +41,7 @@ import (
 //	})
 //	err := client.GetFig("feature-flags", &config, ctx)
 type EvaluationContext struct {
-	context.Context
+	ctx        context.Context
 	Attributes map[string]string
 }
 
@@ -65,9 +66,41 @@ func NewEvaluationContextWithContext(ctx context.Context, attributes map[string]
 		attributes = make(map[string]string)
 	}
 	return &EvaluationContext{
-		Context:    ctx,
+		ctx:        ctx,
 		Attributes: attributes,
 	}
+}
+
+// Deadline implements context.Context.
+func (c *EvaluationContext) Deadline() (deadline time.Time, ok bool) {
+	if c.ctx == nil {
+		return time.Time{}, false
+	}
+	return c.ctx.Deadline()
+}
+
+// Done implements context.Context.
+func (c *EvaluationContext) Done() <-chan struct{} {
+	if c.ctx == nil {
+		return nil
+	}
+	return c.ctx.Done()
+}
+
+// Err implements context.Context.
+func (c *EvaluationContext) Err() error {
+	if c.ctx == nil {
+		return nil
+	}
+	return c.ctx.Err()
+}
+
+// Value implements context.Context.
+func (c *EvaluationContext) Value(key interface{}) interface{} {
+	if c.ctx == nil {
+		return nil
+	}
+	return c.ctx.Value(key)
 }
 
 // Merge merges another context into this one, preserving the original context.Context.
@@ -78,7 +111,7 @@ func (c *EvaluationContext) Merge(other *EvaluationContext) *EvaluationContext {
 		maps.Copy(merged, other.Attributes)
 	}
 	return &EvaluationContext{
-		Context:    c.Context,
+		ctx:        c.ctx,
 		Attributes: merged,
 	}
 }

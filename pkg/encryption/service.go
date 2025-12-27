@@ -59,8 +59,8 @@ func (s *Service) Decrypt(ctx context.Context, fig *model.Fig, namespace string)
 		return nil, fmt.Errorf("decrypt payload: %w", err)
 	}
 
-	log.Printf("DEBUG Decryption: encrypted=%d bytes, decrypted=%d bytes, hex=%x\n",
-		len(fig.Payload), len(payload), payload)
+	log.Printf("DEBUG Decryption: encrypted=%d bytes, decrypted=%d bytes",
+		len(fig.Payload), len(payload))
 
 	return payload, nil
 }
@@ -79,11 +79,7 @@ func (s *Service) getNSK(ctx context.Context, namespace, keyID string) ([]byte, 
 
 	var matchingKey *model.NamespaceKey
 	for _, k := range nsKeys {
-		if keyID == "" && k.KeyID == "" {
-			matchingKey = k
-			break
-		}
-		if keyID != "" && k.KeyID == keyID {
+		if k.KeyID == keyID {
 			matchingKey = k
 			break
 		}

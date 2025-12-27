@@ -195,7 +195,10 @@ func (c *Client) GetFig(key string, target any, ctx *evaluation.EvaluationContex
 
 	// Decrypt
 	payload := fig.Payload
-	if c.encryptionService != nil && fig.IsEncrypted {
+	if fig.IsEncrypted {
+		if c.encryptionService == nil {
+			return fmt.Errorf("received encrypted fig for key '%s' but client is not configured for decryption", key)
+		}
 		p, err := c.encryptionService.Decrypt(ctx, fig, namespace)
 		if err != nil {
 			log.Printf("Failed to decrypt fig with key '%s' in namespace '%s': %v", key, namespace, err)
@@ -356,7 +359,11 @@ func (c *Client) RegisterListener(key string, prototype AvroRecord, callback fun
 		}
 
 		payload := fig.Payload
-		if c.encryptionService != nil && fig.IsEncrypted {
+		if fig.IsEncrypted {
+			if c.encryptionService == nil {
+				log.Printf("Listener received encrypted fig for key '%s' but client is not configured for decryption", key)
+				return
+			}
 			// Use the evaluation context (which implements context.Context)
 			p, err := c.encryptionService.Decrypt(ctx, fig, ff.Definition.Namespace)
 			if err != nil {

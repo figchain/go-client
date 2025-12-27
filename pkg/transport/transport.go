@@ -143,9 +143,10 @@ func (t *HTTPTransport) GetNamespaceKey(ctx context.Context, namespace string) (
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	token, err := t.tokenProvider.GetToken()
-	if err == nil {
-		req.Header.Set("Authorization", "Bearer "+token)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get auth token: %w", err)
 	}
+	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := t.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
@@ -183,9 +184,10 @@ func (t *HTTPTransport) UploadPublicKey(ctx context.Context, key *model.UserPubl
 	}
 	req.Header.Set("Content-Type", "application/json")
 	token, err := t.tokenProvider.GetToken()
-	if err == nil {
-		req.Header.Set("Authorization", "Bearer "+token)
+	if err != nil {
+		return fmt.Errorf("failed to get auth token: %w", err)
 	}
+	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := t.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
@@ -216,9 +218,10 @@ func (t *HTTPTransport) doRequest(ctx context.Context, urlStr string, reqBytes [
 
 	req.Header.Set("Content-Type", "application/octet-stream")
 	token, err := t.tokenProvider.GetToken()
-	if err == nil {
-		req.Header.Set("Authorization", "Bearer "+token)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get auth token: %w", err)
 	}
+	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := t.client.Do(req)
 	if err != nil {
