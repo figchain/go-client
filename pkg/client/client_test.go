@@ -1,6 +1,7 @@
 package client_test
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hamba/avro/v2"
+	"github.com/hamba/avro/v2/ocf"
 
 	"github.com/figchain/go-client/pkg/client"
 	"github.com/figchain/go-client/pkg/config"
@@ -60,21 +62,21 @@ func TestClient_GetFig(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/data/initial" {
-			schema := getRespSchema("InitialFetchResponse")
-			data, err := avro.Marshal(schema, mockInitialResp)
-			if err != nil {
-				t.Fatalf("failed to marshal mock response: %v", err)
-			}
-			w.Write(data)
+			schemaStr := getRespSchema("InitialFetchResponse").String()
+			var buf bytes.Buffer
+			enc, _ := ocf.NewEncoder(schemaStr, &buf)
+			enc.Encode(mockInitialResp)
+			enc.Flush()
+			w.Write(buf.Bytes())
 			return
 		}
 		if r.URL.Path == "/data/updates" {
-			schema := getRespSchema("UpdateFetchResponse")
-			data, err := avro.Marshal(schema, &model.UpdateFetchResponse{Cursor: "1"})
-			if err != nil {
-				t.Fatalf("failed to marshal mock response: %v", err)
-			}
-			w.Write(data)
+			schemaStr := getRespSchema("UpdateFetchResponse").String()
+			var buf bytes.Buffer
+			enc, _ := ocf.NewEncoder(schemaStr, &buf)
+			enc.Encode(&model.UpdateFetchResponse{Cursor: "1"})
+			enc.Flush()
+			w.Write(buf.Bytes())
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -86,6 +88,7 @@ func TestClient_GetFig(t *testing.T) {
 		config.WithBaseURL(server.URL),
 		config.WithEnvironmentID("env-1"),
 		config.WithNamespaces("default"),
+		config.WithClientSecret("test-secret"),
 		config.WithPollingInterval(100*time.Millisecond),
 	)
 	if err != nil {
@@ -127,16 +130,18 @@ func TestClient_Watch(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/data/initial" {
-			schema := getRespSchema("InitialFetchResponse")
-			data, _ := avro.Marshal(schema, mockInitialResp)
-			w.Write(data)
+			schemaStr := getRespSchema("InitialFetchResponse").String()
+			var buf bytes.Buffer
+			enc, _ := ocf.NewEncoder(schemaStr, &buf)
+			enc.Encode(mockInitialResp)
+			enc.Flush()
+			w.Write(buf.Bytes())
 			return
 		}
 		if r.URL.Path == "/data/updates" {
 			updateMutex.Lock()
 			defer updateMutex.Unlock()
 
-			schema := getRespSchema("UpdateFetchResponse")
 			if !params.updateServed {
 				// Serve an update
 				params.updateServed = true
@@ -152,13 +157,21 @@ func TestClient_Watch(t *testing.T) {
 						},
 					},
 				}
-				data, _ := avro.Marshal(schema, resp)
-				w.Write(data)
+				schemaStr := getRespSchema("UpdateFetchResponse").String()
+				var buf bytes.Buffer
+				enc, _ := ocf.NewEncoder(schemaStr, &buf)
+				enc.Encode(resp)
+				enc.Flush()
+				w.Write(buf.Bytes())
 			} else {
 				// No more updates
 				resp := &model.UpdateFetchResponse{Cursor: "2"}
-				data, _ := avro.Marshal(schema, resp)
-				w.Write(data)
+				schemaStr := getRespSchema("UpdateFetchResponse").String()
+				var buf bytes.Buffer
+				enc, _ := ocf.NewEncoder(schemaStr, &buf)
+				enc.Encode(resp)
+				enc.Flush()
+				w.Write(buf.Bytes())
 			}
 			return
 		}
@@ -169,6 +182,7 @@ func TestClient_Watch(t *testing.T) {
 		config.WithBaseURL(server.URL),
 		config.WithEnvironmentID("env-1"),
 		config.WithNamespaces("default"),
+		config.WithClientSecret("test-secret"),
 		config.WithPollingInterval(50*time.Millisecond),
 	)
 	if err != nil {
