@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/figchain/go-client/pkg/model"
 	"github.com/hamba/avro/v2"
+	"github.com/hamba/avro/v2/ocf"
 )
 
 func TestHTTPTransport_FetchInitial(t *testing.T) {
@@ -48,16 +50,25 @@ func TestHTTPTransport_FetchInitial(t *testing.T) {
 			t.Errorf("Expected Authorization header Bearer secret, got %s", r.Header.Get("Authorization"))
 		}
 
-		data, err := avro.Marshal(respSchema, mockResp)
+		var buf bytes.Buffer
+		enc, err := ocf.NewEncoder(respSchema.String(), &buf)
 		if err != nil {
-			t.Errorf("Failed to marshal mock response: %v", err)
+			t.Errorf("Failed to create OCF encoder: %v", err)
 			return
 		}
-		w.Write(data)
+		if err := enc.Encode(mockResp); err != nil {
+			t.Errorf("Failed to encode mock response: %v", err)
+			return
+		}
+		if err := enc.Flush(); err != nil {
+			t.Errorf("Failed to flush OCF encoder: %v", err)
+			return
+		}
+		w.Write(buf.Bytes())
 	}))
 	defer server.Close()
 
-	tr := NewHTTPTransport(server.Client(), server.URL, "secret", "env-1")
+	tr := NewHTTPTransport(server.Client(), server.URL, NewSharedSecretTokenProvider("secret"), "env-1")
 
 	resp, err := tr.FetchInitial(context.Background(), &model.InitialFetchRequest{
 		Namespace:     "ns-1",
@@ -110,16 +121,25 @@ func TestHTTPTransport_FetchUpdate(t *testing.T) {
 			t.Errorf("Expected path /data/updates, got %s", r.URL.Path)
 		}
 
-		data, err := avro.Marshal(respSchema, mockResp)
+		var buf bytes.Buffer
+		enc, err := ocf.NewEncoder(respSchema.String(), &buf)
 		if err != nil {
-			t.Errorf("Failed to marshal mock response: %v", err)
+			t.Errorf("Failed to create OCF encoder: %v", err)
 			return
 		}
-		w.Write(data)
+		if err := enc.Encode(mockResp); err != nil {
+			t.Errorf("Failed to encode mock response: %v", err)
+			return
+		}
+		if err := enc.Flush(); err != nil {
+			t.Errorf("Failed to flush OCF encoder: %v", err)
+			return
+		}
+		w.Write(buf.Bytes())
 	}))
 	defer server.Close()
 
-	tr := NewHTTPTransport(server.Client(), server.URL, "secret", "env-1")
+	tr := NewHTTPTransport(server.Client(), server.URL, NewSharedSecretTokenProvider("secret"), "env-1")
 
 	resp, err := tr.FetchUpdate(context.Background(), &model.UpdateFetchRequest{
 		Namespace:     "ns-1",
@@ -142,7 +162,7 @@ func TestHTTPTransport_Error(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tr := NewHTTPTransport(server.Client(), server.URL, "secret", "env-1")
+	tr := NewHTTPTransport(server.Client(), server.URL, NewSharedSecretTokenProvider("secret"), "env-1")
 
 	_, err := tr.FetchInitial(context.Background(), &model.InitialFetchRequest{})
 	if err == nil {

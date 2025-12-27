@@ -38,7 +38,11 @@ type FigDefinition struct {
 type Fig struct {
 	FigID   string `avro:"figId"`
 	Version string `avro:"version"`
-	Payload []byte `avro:"payload"`
+	Payload             []byte  `avro:"payload"`
+	IsEncrypted         bool    `avro:"isEncrypted"`
+	WrappedDek          []byte  `avro:"wrappedDek"`
+	EncryptionAlgorithm *string `avro:"encryptionAlgorithm"`
+	KeyID               *string `avro:"keyId"`
 }
 
 // FigFamily is a generated struct.

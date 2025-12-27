@@ -23,6 +23,7 @@ type Config struct {
 	BaseURL           string            `mapstructure:"base_url"`
 	LongPollingURL    string            `mapstructure:"long_polling_url"`
 	EnvironmentID     string            `mapstructure:"environment_id"`
+	TenantID          string            `mapstructure:"tenant_id"`
 	PollingInterval   time.Duration     `mapstructure:"polling_interval"`
 	MaxRetries        int               `mapstructure:"max_retries"`
 	RetryDelay        time.Duration     `mapstructure:"retry_delay"`
@@ -34,13 +35,16 @@ type Config struct {
 	BootstrapStrategy BootstrapStrategy `mapstructure:"bootstrap_strategy"`
 
 	// Vault Configuration
-	VaultBucket         string `mapstructure:"vault_bucket"`
-	VaultPrefix         string `mapstructure:"vault_prefix"`
-	VaultRegion         string `mapstructure:"vault_region"`
-	VaultEndpoint       string `mapstructure:"vault_endpoint"`
-	VaultPathStyle      bool   `mapstructure:"vault_path_style"`
-	VaultPrivateKeyPath string `mapstructure:"vault_private_key_path"`
-	VaultEnabled        bool   `mapstructure:"vault_enabled"`
+	VaultBucket              string `mapstructure:"vault_bucket"`
+	VaultPrefix              string `mapstructure:"vault_prefix"`
+	VaultRegion              string `mapstructure:"vault_region"`
+	VaultEndpoint            string `mapstructure:"vault_endpoint"`
+	VaultPathStyle           bool   `mapstructure:"vault_path_style"`
+	VaultPrivateKeyPath      string `mapstructure:"vault_private_key_path"`
+	VaultEnabled             bool   `mapstructure:"vault_enabled"`
+	EncryptionPrivateKeyPath string `mapstructure:"encryption_private_key_path"`
+	AuthPrivateKeyPath       string `mapstructure:"auth_private_key_path"`
+	AuthClientID             string `mapstructure:"auth_client_id"`
 }
 
 // LoadConfig loads configuration from a YAML file and environment variables.
@@ -108,6 +112,13 @@ func WithLongPollingURL(url string) Option {
 func WithEnvironmentID(id string) Option {
 	return func(c *Config) {
 		c.EnvironmentID = id
+	}
+}
+
+// WithTenantID sets the tenant ID.
+func WithTenantID(id string) Option {
+	return func(c *Config) {
+		c.TenantID = id
 	}
 }
 
@@ -220,6 +231,27 @@ func WithVaultPrivateKeyPath(path string) Option {
 func WithVaultEnabled(enabled bool) Option {
 	return func(c *Config) {
 		c.VaultEnabled = enabled
+	}
+}
+
+// WithEncryptionPrivateKeyPath sets the path to the encryption private key.
+func WithEncryptionPrivateKeyPath(path string) Option {
+	return func(c *Config) {
+		c.EncryptionPrivateKeyPath = path
+	}
+}
+
+// WithAuthPrivateKeyPath sets the path to the authentication private key.
+func WithAuthPrivateKeyPath(path string) Option {
+	return func(c *Config) {
+		c.AuthPrivateKeyPath = path
+	}
+}
+
+// WithAuthClientID sets the auth client ID.
+func WithAuthClientID(id string) Option {
+	return func(c *Config) {
+		c.AuthClientID = id
 	}
 }
 

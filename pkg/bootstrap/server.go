@@ -56,6 +56,7 @@ func (s *ServerStrategy) Bootstrap(ctx context.Context, namespaces []string) (*R
 		if resp.Cursor != "" {
 			cursors[ns] = resp.Cursor
 		}
+		log.Printf("Bootstrap: Fetched %d families for namespace %s, Cursor: %s", len(resp.FigFamilies), ns, resp.Cursor)
 	}
 
 	return &Result{

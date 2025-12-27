@@ -3,6 +3,7 @@ package transport
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,12 +11,15 @@ import (
 
 	"github.com/figchain/go-client/pkg/model"
 	"github.com/hamba/avro/v2"
+	"github.com/hamba/avro/v2/ocf"
 )
 
 // Transport defines the interface for fetching data from the FigChain API.
 type Transport interface {
 	FetchInitial(ctx context.Context, req *model.InitialFetchRequest) (*model.InitialFetchResponse, error)
 	FetchUpdate(ctx context.Context, req *model.UpdateFetchRequest) (*model.UpdateFetchResponse, error)
+	GetNamespaceKey(ctx context.Context, namespace string) ([]*model.NamespaceKey, error)
+	UploadPublicKey(ctx context.Context, key *model.UserPublicKey) error
 	Close() error
 }
 
@@ -23,16 +27,16 @@ type Transport interface {
 type HTTPTransport struct {
 	client        *http.Client
 	baseURL       string
-	clientSecret  string
+	tokenProvider TokenProvider
 	environmentID string
 }
 
 // NewHTTPTransport creates a new HTTPTransport.
-func NewHTTPTransport(client *http.Client, baseURL, clientSecret, environmentID string) *HTTPTransport {
+func NewHTTPTransport(client *http.Client, baseURL string, tokenProvider TokenProvider, environmentID string) *HTTPTransport {
 	return &HTTPTransport{
 		client:        client,
 		baseURL:       baseURL,
-		clientSecret:  clientSecret,
+		tokenProvider: tokenProvider,
 		environmentID: environmentID,
 	}
 }
@@ -46,22 +50,40 @@ func (t *HTTPTransport) FetchInitial(ctx context.Context, req *model.InitialFetc
 
 	reqSchema := findSchemaByName(scheme, "InitialFetchRequest")
 
-	reqBytes, err := avro.Marshal(reqSchema, req)
+	// Use OCF for request
+	var buf bytes.Buffer
+	enc, err := ocf.NewEncoder(reqSchema.String(), &buf)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, fmt.Errorf("failed to create OCF encoder: %w", err)
 	}
+	if err := enc.Encode(req); err != nil {
+		return nil, fmt.Errorf("failed to encode request: %w", err)
+	}
+	if err := enc.Flush(); err != nil {
+		return nil, fmt.Errorf("failed to flush OCF encoder: %w", err)
+	}
+	// OCF encoder writes to buf
 
-	respBytes, err := t.doRequest(ctx, endpoint, reqBytes)
+	respBytes, err := t.doRequest(ctx, endpoint, buf.Bytes())
 	if err != nil {
 		return nil, err
 	}
 
-	respSchema := findSchemaByName(scheme, "InitialFetchResponse")
+	// Use OCF for response
+	dec, err := ocf.NewDecoder(bytes.NewReader(respBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create OCF decoder: %w", err)
+	}
 
 	var resp model.InitialFetchResponse
-	if err := avro.Unmarshal(respSchema, respBytes, &resp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	if dec.HasNext() {
+		if err := dec.Decode(&resp); err != nil {
+			return nil, fmt.Errorf("failed to decode response: %w", err)
+		}
+	} else {
+		return nil, fmt.Errorf("empty response")
 	}
+
 	return &resp, nil
 }
 
@@ -74,23 +96,109 @@ func (t *HTTPTransport) FetchUpdate(ctx context.Context, req *model.UpdateFetchR
 
 	reqSchema := findSchemaByName(scheme, "UpdateFetchRequest")
 
-	reqBytes, err := avro.Marshal(reqSchema, req)
+	// Use OCF for request
+	var buf bytes.Buffer
+	enc, err := ocf.NewEncoder(reqSchema.String(), &buf)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, fmt.Errorf("failed to create OCF encoder: %w", err)
+	}
+	if err := enc.Encode(req); err != nil {
+		return nil, fmt.Errorf("failed to encode request: %w", err)
+	}
+	if err := enc.Flush(); err != nil {
+		return nil, fmt.Errorf("failed to flush OCF encoder: %w", err)
 	}
 
-	respBytes, err := t.doRequest(ctx, endpoint, reqBytes)
+	respBytes, err := t.doRequest(ctx, endpoint, buf.Bytes())
 	if err != nil {
 		return nil, err
 	}
 
-	respSchema := findSchemaByName(scheme, "UpdateFetchResponse")
+	// Use OCF for response
+	dec, err := ocf.NewDecoder(bytes.NewReader(respBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create OCF decoder: %w", err)
+	}
 
 	var resp model.UpdateFetchResponse
-	if err := avro.Unmarshal(respSchema, respBytes, &resp); err != nil {
+	if dec.HasNext() {
+		if err := dec.Decode(&resp); err != nil {
+			return nil, fmt.Errorf("failed to decode response: %w", err)
+		}
+	} else {
+		return nil, fmt.Errorf("empty response")
+	}
+
+	return &resp, nil
+}
+
+func (t *HTTPTransport) GetNamespaceKey(ctx context.Context, namespace string) ([]*model.NamespaceKey, error) {
+	endpoint := fmt.Sprintf("%s/keys/namespace/%s", t.baseURL, url.PathEscape(namespace))
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("invalid url: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	token, err := t.tokenProvider.GetToken()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get auth token: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("server returned error %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var nsKeys []*model.NamespaceKey
+	if err := json.Unmarshal(bodyBytes, &nsKeys); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
-	return &resp, nil
+	return nsKeys, nil
+}
+
+func (t *HTTPTransport) UploadPublicKey(ctx context.Context, key *model.UserPublicKey) error {
+	endpoint := fmt.Sprintf("%s/keys/public", t.baseURL)
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("invalid url: %w", err)
+	}
+	jsonBytes, err := json.Marshal(key)
+	if err != nil {
+		return fmt.Errorf("failed to marshal key: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, "PUT", u.String(), bytes.NewReader(jsonBytes))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	token, err := t.tokenProvider.GetToken()
+	if err != nil {
+		return fmt.Errorf("failed to get auth token: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server returned error %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+	return nil
 }
 
 func (t *HTTPTransport) Close() error {
@@ -109,9 +217,11 @@ func (t *HTTPTransport) doRequest(ctx context.Context, urlStr string, reqBytes [
 	}
 
 	req.Header.Set("Content-Type", "application/octet-stream")
-	if t.clientSecret != "" {
-		req.Header.Set("Authorization", "Bearer "+t.clientSecret)
+	token, err := t.tokenProvider.GetToken()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get auth token: %w", err)
 	}
+	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := t.client.Do(req)
 	if err != nil {

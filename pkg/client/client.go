@@ -13,10 +13,12 @@ import (
 
 	"github.com/figchain/go-client/pkg/bootstrap"
 	"github.com/figchain/go-client/pkg/config"
+	"github.com/figchain/go-client/pkg/encryption"
 	"github.com/figchain/go-client/pkg/evaluation"
 	"github.com/figchain/go-client/pkg/model"
 	"github.com/figchain/go-client/pkg/store"
 	"github.com/figchain/go-client/pkg/transport"
+	"github.com/figchain/go-client/pkg/util"
 	"github.com/figchain/go-client/pkg/vault"
 )
 
@@ -27,16 +29,17 @@ type AvroRecord interface {
 
 // Client is the main entry point for the FigChain client.
 type Client struct {
-	cfg              *config.Config
-	store            store.Store
-	evaluator        evaluation.Evaluator
-	transport        transport.Transport
-	namespaceCursors map[string]string
-	watchers         map[string][]chan model.FigFamily
-	listeners        map[string][]func(model.FigFamily)
-	mu               sync.RWMutex
-	wg               sync.WaitGroup
-	closeCh          chan struct{}
+	cfg               *config.Config
+	store             store.Store
+	evaluator         evaluation.Evaluator
+	transport         transport.Transport
+	namespaceCursors  map[string]string
+	watchers          map[string][]chan model.FigFamily
+	listeners         map[string][]func(model.FigFamily)
+	encryptionService *encryption.Service
+	mu                sync.RWMutex
+	wg                sync.WaitGroup
+	closeCh           chan struct{}
 }
 
 // New creates a new Client.
@@ -52,18 +55,57 @@ func New(opts ...config.Option) (*Client, error) {
 	if cfg.EnvironmentID == "" {
 		return nil, fmt.Errorf("EnvironmentID is required")
 	}
+	if cfg.ClientSecret == "" && cfg.AuthPrivateKeyPath == "" {
+		return nil, fmt.Errorf("an authentication method must be configured. Please provide either a ClientSecret or an AuthPrivateKeyPath")
+	}
 
-	tr := transport.NewHTTPTransport(cfg.HTTPClient, cfg.BaseURL, cfg.ClientSecret, cfg.EnvironmentID)
+	var tokenProvider transport.TokenProvider
+	if cfg.AuthPrivateKeyPath != "" {
+		if len(cfg.Namespaces) > 1 {
+			return nil, fmt.Errorf("private key authentication can only be used with a single namespace")
+		}
+		pk, err := util.LoadRSAPrivateKey(cfg.AuthPrivateKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load auth private key: %w", err)
+		}
+
+		// Use EnvironmentID as placeholder if AuthClientID not set, but prefer AuthClientID
+		serviceAccountID := cfg.EnvironmentID
+		if cfg.AuthClientID != "" {
+			serviceAccountID = cfg.AuthClientID
+		}
+
+		// Use first namespace if available for auth token scope
+		namespace := ""
+		if len(cfg.Namespaces) > 0 {
+			namespace = cfg.Namespaces[0]
+		}
+		tokenProvider = transport.NewPrivateKeyTokenProvider(pk, serviceAccountID, cfg.TenantID, namespace, "")
+	} else {
+		tokenProvider = transport.NewSharedSecretTokenProvider(cfg.ClientSecret)
+	}
+
+	tr := transport.NewHTTPTransport(cfg.HTTPClient, cfg.BaseURL, tokenProvider, cfg.EnvironmentID)
+
+	var encService *encryption.Service
+	if cfg.EncryptionPrivateKeyPath != "" {
+		svc, err := encryption.NewService(tr, cfg.EncryptionPrivateKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create encryption service: %w", err)
+		}
+		encService = svc
+	}
 
 	c := &Client{
-		cfg:              cfg,
-		store:            store.NewMemoryStore(),
-		evaluator:        evaluation.NewRuleBasedEvaluator(),
-		transport:        tr,
-		namespaceCursors: make(map[string]string),
-		watchers:         make(map[string][]chan model.FigFamily),
-		listeners:        make(map[string][]func(model.FigFamily)),
-		closeCh:          make(chan struct{}),
+		cfg:               cfg,
+		store:             store.NewMemoryStore(),
+		evaluator:         evaluation.NewRuleBasedEvaluator(),
+		transport:         tr,
+		encryptionService: encService,
+		namespaceCursors:  make(map[string]string),
+		watchers:          make(map[string][]chan model.FigFamily),
+		listeners:         make(map[string][]func(model.FigFamily)),
+		closeCh:           make(chan struct{}),
 	}
 
 	// Select Bootstrap Strategy
@@ -149,6 +191,22 @@ func (c *Client) GetFig(key string, target any, ctx *evaluation.EvaluationContex
 		return fmt.Errorf("no matching fig found for key: %s", key)
 	}
 
+	log.Printf("DEBUG GetFig: key=%s, IsEncrypted=%v, PayloadLen=%d", key, fig.IsEncrypted, len(fig.Payload))
+
+	// Decrypt
+	payload := fig.Payload
+	if fig.IsEncrypted {
+		if c.encryptionService == nil {
+			return fmt.Errorf("received encrypted fig for key '%s' but client is not configured for decryption", key)
+		}
+		p, err := c.encryptionService.Decrypt(ctx, fig, namespace)
+		if err != nil {
+			log.Printf("Failed to decrypt fig with key '%s' in namespace '%s': %v", key, namespace, err)
+			return fmt.Errorf("failed to decrypt fig with key '%s' in namespace '%s': %w", key, namespace, err)
+		}
+		payload = p
+	}
+
 	// Deserialize Avro
 	record, ok := target.(AvroRecord)
 	if !ok {
@@ -160,7 +218,7 @@ func (c *Client) GetFig(key string, target any, ctx *evaluation.EvaluationContex
 		return fmt.Errorf("failed to parse schema from target: %w", err)
 	}
 
-	if err := avro.Unmarshal(schema, fig.Payload, target); err != nil {
+	if err := avro.Unmarshal(schema, payload, target); err != nil {
 		return fmt.Errorf("failed to unmarshal avro: %w", err)
 	}
 
@@ -277,7 +335,7 @@ func (c *Client) RegisterListener(key string, prototype AvroRecord, callback fun
 
 	// We create a wrapper func that handles the logic
 	wrapper := func(ff model.FigFamily) {
-		// Empty context
+		// Empty evaluation context (embeds context.Background())
 		ctx := evaluation.NewEvaluationContext(nil)
 		fig, err := c.evaluator.Evaluate(&ff, ctx)
 		if err != nil || fig == nil {
@@ -300,7 +358,22 @@ func (c *Client) RegisterListener(key string, prototype AvroRecord, callback fun
 			return
 		}
 
-		if err := avro.Unmarshal(schema, fig.Payload, target); err != nil {
+		payload := fig.Payload
+		if fig.IsEncrypted {
+			if c.encryptionService == nil {
+				log.Printf("Listener received encrypted fig for key '%s' but client is not configured for decryption", key)
+				return
+			}
+			// Use the evaluation context (which implements context.Context)
+			p, err := c.encryptionService.Decrypt(ctx, fig, ff.Definition.Namespace)
+			if err != nil {
+				log.Printf("Listener decryption failed for %s: %v", key, err)
+				return
+			}
+			payload = p
+		}
+
+		if err := avro.Unmarshal(schema, payload, target); err != nil {
 			log.Printf("Listener unmarshal failed for %s: %v", key, err)
 			return
 		}
