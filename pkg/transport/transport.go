@@ -133,7 +133,7 @@ func (t *HTTPTransport) FetchUpdate(ctx context.Context, req *model.UpdateFetchR
 }
 
 func (t *HTTPTransport) GetNamespaceKey(ctx context.Context, namespace string) ([]*model.NamespaceKey, error) {
-	endpoint := fmt.Sprintf("%s/keys/namespace/%s", t.baseURL, url.PathEscape(namespace))
+	endpoint := fmt.Sprintf("%s/envelopes", t.baseURL)
 	u, err := url.Parse(endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("invalid url: %w", err)
@@ -161,9 +161,19 @@ func (t *HTTPTransport) GetNamespaceKey(ctx context.Context, namespace string) (
 		return nil, fmt.Errorf("server returned error %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
-	var nsKeys []*model.NamespaceKey
-	if err := json.Unmarshal(bodyBytes, &nsKeys); err != nil {
+	var envelopes []model.Envelope
+	if err := json.Unmarshal(bodyBytes, &envelopes); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	var nsKeys []*model.NamespaceKey
+	for _, env := range envelopes {
+		if env.Key.NamespaceID == namespace {
+			nsKeys = append(nsKeys, &model.NamespaceKey{
+				WrappedKey: env.EncryptedBlob,
+				KeyID:      fmt.Sprintf("%d", env.Key.NskVersion),
+			})
+		}
 	}
 	return nsKeys, nil
 }

@@ -44,7 +44,9 @@ type Config struct {
 	VaultEnabled             bool   `mapstructure:"vault_enabled"`
 	EncryptionPrivateKeyPath string `mapstructure:"encryption_private_key_path"`
 	AuthPrivateKeyPath       string `mapstructure:"auth_private_key_path"`
+	AuthPrivateKeyPEM        string `mapstructure:"auth_private_key_pem"`
 	AuthClientID             string `mapstructure:"auth_client_id"`
+	AuthCredentialID         string `mapstructure:"auth_credential_id"`
 }
 
 // LoadConfig loads configuration from a YAML file and environment variables.
@@ -78,6 +80,27 @@ func LoadConfig(path string) (*Config, error) {
 			return nil, err
 		}
 		// Config file not found is fine, we just rely on defaults/env vars
+	}
+
+	// Map camelCase keys from JSON to snake_case for mapstructure if needed
+	if v.IsSet("environmentId") {
+		v.Set("environment_id", v.GetString("environmentId"))
+	}
+	if v.IsSet("tenantId") {
+		v.Set("tenant_id", v.GetString("tenantId"))
+	}
+	if v.IsSet("credentialId") {
+		v.Set("auth_credential_id", v.GetString("credentialId"))
+	}
+	if v.IsSet("privateKey") {
+		v.Set("auth_private_key_pem", v.GetString("privateKey"))
+	}
+	// Handle legacy "namespace" field
+	if v.IsSet("namespace") {
+		ns := v.GetString("namespace")
+		if !v.IsSet("namespaces") {
+			v.Set("namespaces", []string{ns})
+		}
 	}
 
 	var config Config
@@ -252,6 +275,20 @@ func WithAuthPrivateKeyPath(path string) Option {
 func WithAuthClientID(id string) Option {
 	return func(c *Config) {
 		c.AuthClientID = id
+	}
+}
+
+// WithAuthPrivateKeyPEM sets the auth private key PEM content.
+func WithAuthPrivateKeyPEM(pem string) Option {
+	return func(c *Config) {
+		c.AuthPrivateKeyPEM = pem
+	}
+}
+
+// WithAuthCredentialID sets the auth credential ID.
+func WithAuthCredentialID(id string) Option {
+	return func(c *Config) {
+		c.AuthCredentialID = id
 	}
 }
 

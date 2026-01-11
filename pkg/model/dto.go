@@ -10,3 +10,14 @@ type NamespaceKey struct {
 	WrappedKey string `json:"wrappedKey"`
 	KeyID      string `json:"keyId"`
 }
+
+type EnvelopeKey struct {
+	TargetID    string `json:"targetId"`
+	NamespaceID string `json:"namespaceId"`
+	NskVersion  int    `json:"nskVersion"`
+}
+
+type Envelope struct {
+	Key           EnvelopeKey `json:"key"`
+	EncryptedBlob string      `json:"encryptedBlob"`
+}
