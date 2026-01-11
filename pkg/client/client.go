@@ -2,9 +2,12 @@ package client
 
 import (
 	"context"
+	"crypto/rsa"
+	"encoding/json"
 	"fmt"
 	"log"
 	"maps"
+	"os"
 	"reflect"
 	"sync"
 	"time"
@@ -42,6 +45,59 @@ type Client struct {
 	closeCh           chan struct{}
 }
 
+// NewClientFromConfig creates a new Client from a JSON configuration file.
+// Prioritizes Env vars over Config file, but Options over everything.
+func NewClientFromConfig(path string, opts ...config.Option) (*Client, error) {
+	// 1. Load Env/Defaults first
+	cfg, err := config.LoadConfig("")
+	if err != nil {
+		return nil, fmt.Errorf("failed to load base config: %w", err)
+	}
+
+	// 2. Read JSON
+	// We define a struct matching client-config.json
+	type ClientConfig struct {
+		Namespace    string `json:"namespace"`
+		CredentialID string `json:"credentialId"`
+		PrivateKey   string `json:"privateKey"`
+		// Backup configuration is handled separately or via Env
+	}
+
+	fileBytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
+	}
+
+	var cc ClientConfig
+	if err := json.Unmarshal(fileBytes, &cc); err != nil {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	// 3. Apply JSON values as Defaults (fill if empty)
+	// Note: LoadConfig("") might have left fields empty if not in Env or yaml.
+
+	if len(cfg.Namespaces) == 0 && cc.Namespace != "" {
+		cfg.Namespaces = []string{cc.Namespace}
+	}
+
+	if cfg.AuthCredentialID == "" && cc.CredentialID != "" {
+		cfg.AuthCredentialID = cc.CredentialID
+	}
+
+	if cfg.AuthPrivateKeyPEM == "" && cfg.AuthPrivateKeyPath == "" && cc.PrivateKey != "" {
+		cfg.AuthPrivateKeyPEM = cc.PrivateKey
+	}
+
+	// 4. Apply Options (Overrides everything)
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	// 5. Create Client using the constructed config object
+	// We use WithConfig to pass the fully populated configuration to New()
+	return New(config.WithConfig(cfg))
+}
+
 // New creates a new Client.
 func New(opts ...config.Option) (*Client, error) {
 	cfg := config.DefaultConfig()
@@ -55,16 +111,24 @@ func New(opts ...config.Option) (*Client, error) {
 	if cfg.EnvironmentID == "" {
 		return nil, fmt.Errorf("EnvironmentID is required")
 	}
-	if cfg.ClientSecret == "" && cfg.AuthPrivateKeyPath == "" {
-		return nil, fmt.Errorf("an authentication method must be configured. Please provide either a ClientSecret or an AuthPrivateKeyPath")
+	if cfg.ClientSecret == "" && cfg.AuthPrivateKeyPath == "" && cfg.AuthPrivateKeyPEM == "" {
+		return nil, fmt.Errorf("an authentication method must be configured. Please provide either a ClientSecret, AuthPrivateKeyPath, or AuthPrivateKeyPEM")
 	}
 
 	var tokenProvider transport.TokenProvider
-	if cfg.AuthPrivateKeyPath != "" {
+	if cfg.AuthPrivateKeyPath != "" || cfg.AuthPrivateKeyPEM != "" {
 		if len(cfg.Namespaces) > 1 {
 			return nil, fmt.Errorf("private key authentication can only be used with a single namespace")
 		}
-		pk, err := util.LoadRSAPrivateKey(cfg.AuthPrivateKeyPath)
+
+		var pk *rsa.PrivateKey
+		var err error
+		if cfg.AuthPrivateKeyPEM != "" {
+			pk, err = util.ParseRSAPrivateKey([]byte(cfg.AuthPrivateKeyPEM))
+		} else {
+			pk, err = util.LoadRSAPrivateKey(cfg.AuthPrivateKeyPath)
+		}
+
 		if err != nil {
 			return nil, fmt.Errorf("failed to load auth private key: %w", err)
 		}
@@ -73,6 +137,8 @@ func New(opts ...config.Option) (*Client, error) {
 		serviceAccountID := cfg.EnvironmentID
 		if cfg.AuthClientID != "" {
 			serviceAccountID = cfg.AuthClientID
+		} else if cfg.AuthCredentialID != "" {
+			serviceAccountID = cfg.AuthCredentialID
 		}
 
 		// Use first namespace if available for auth token scope
@@ -80,7 +146,8 @@ func New(opts ...config.Option) (*Client, error) {
 		if len(cfg.Namespaces) > 0 {
 			namespace = cfg.Namespaces[0]
 		}
-		tokenProvider = transport.NewPrivateKeyTokenProvider(pk, serviceAccountID, cfg.TenantID, namespace, "")
+
+		tokenProvider = transport.NewPrivateKeyTokenProvider(pk, serviceAccountID, cfg.TenantID, namespace, cfg.AuthCredentialID)
 	} else {
 		tokenProvider = transport.NewSharedSecretTokenProvider(cfg.ClientSecret)
 	}
