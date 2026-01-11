@@ -82,25 +82,23 @@ func LoadConfig(path string) (*Config, error) {
 		// Config file not found is fine, we just rely on defaults/env vars
 	}
 
-	// Map camelCase keys from JSON to snake_case for mapstructure if needed
-	if v.IsSet("environmentId") {
-		v.Set("environment_id", v.GetString("environmentId"))
+	// Map camelCase keys from JSON to snake_case for mapstructure if needed.
+	// This ensures consistency between different configuration sources.
+	jsonKeyAliases := map[string]string{
+		"environmentId": "environment_id",
+		"tenantId":      "tenant_id",
+		"credentialId":  "auth_credential_id",
+		"privateKey":    "auth_private_key_pem",
 	}
-	if v.IsSet("tenantId") {
-		v.Set("tenant_id", v.GetString("tenantId"))
-	}
-	if v.IsSet("credentialId") {
-		v.Set("auth_credential_id", v.GetString("credentialId"))
-	}
-	if v.IsSet("privateKey") {
-		v.Set("auth_private_key_pem", v.GetString("privateKey"))
-	}
-	// Handle legacy "namespace" field
-	if v.IsSet("namespace") {
-		ns := v.GetString("namespace")
-		if !v.IsSet("namespaces") {
-			v.Set("namespaces", []string{ns})
+	for camelKey, snakeKey := range jsonKeyAliases {
+		if v.IsSet(camelKey) && !v.IsSet(snakeKey) {
+			v.Set(snakeKey, v.Get(camelKey))
 		}
+	}
+
+	// Handle legacy "namespace" field (single string)
+	if v.IsSet("namespace") && !v.IsSet("namespaces") {
+		v.Set("namespaces", []string{v.GetString("namespace")})
 	}
 
 	var config Config

@@ -133,7 +133,7 @@ func (t *HTTPTransport) FetchUpdate(ctx context.Context, req *model.UpdateFetchR
 }
 
 func (t *HTTPTransport) GetNamespaceKey(ctx context.Context, namespace string) ([]*model.NamespaceKey, error) {
-	endpoint := fmt.Sprintf("%s/envelopes", t.baseURL)
+	endpoint := fmt.Sprintf("%s/envelopes?namespace=%s", t.baseURL, url.QueryEscape(namespace))
 	u, err := url.Parse(endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("invalid url: %w", err)

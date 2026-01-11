@@ -118,7 +118,7 @@ func New(opts ...config.Option) (*Client, error) {
 	var tokenProvider transport.TokenProvider
 	if cfg.AuthPrivateKeyPath != "" || cfg.AuthPrivateKeyPEM != "" {
 		if len(cfg.Namespaces) > 1 {
-			// Private key authentication is typically used with a single namespace
+			return nil, fmt.Errorf("private key authentication can only be used with a single namespace")
 		}
 
 		var pk *rsa.PrivateKey
