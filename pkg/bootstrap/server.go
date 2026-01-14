@@ -40,6 +40,7 @@ func (s *ServerStrategy) Bootstrap(ctx context.Context, namespaces []string) (*R
 	var allFamilies []model.FigFamily
 	cursors := make(map[string]string)
 
+	schemas := make(map[string]string)
 	for _, ns := range namespaces {
 		req := &model.InitialFetchRequest{
 			Namespace:     ns,
@@ -56,11 +57,15 @@ func (s *ServerStrategy) Bootstrap(ctx context.Context, namespaces []string) (*R
 		if resp.Cursor != "" {
 			cursors[ns] = resp.Cursor
 		}
+		for k, v := range resp.Schemas {
+			schemas[k] = v
+		}
 		log.Printf("Bootstrap: Fetched %d families for namespace %s, Cursor: %s", len(resp.FigFamilies), ns, resp.Cursor)
 	}
 
 	return &Result{
 		FigFamilies: allFamilies,
 		Cursors:     cursors,
+		Schemas:     schemas,
 	}, nil
 }

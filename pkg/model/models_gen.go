@@ -36,8 +36,8 @@ type FigDefinition struct {
 
 // Fig is a generated struct.
 type Fig struct {
-	FigID   string `avro:"figId"`
-	Version string `avro:"version"`
+	FigID               string  `avro:"figId"`
+	Version             string  `avro:"version"`
 	Payload             []byte  `avro:"payload"`
 	IsEncrypted         bool    `avro:"isEncrypted"`
 	WrappedDek          []byte  `avro:"wrappedDek"`
@@ -62,9 +62,10 @@ type InitialFetchRequest struct {
 
 // InitialFetchResponse is a generated struct.
 type InitialFetchResponse struct {
-	FigFamilies   []FigFamily `avro:"figFamilies"`
-	Cursor        string      `avro:"cursor"`
-	EnvironmentID string      `avro:"environmentId"`
+	FigFamilies   []FigFamily       `avro:"figFamilies"`
+	Cursor        string            `avro:"cursor"`
+	EnvironmentID string            `avro:"environmentId"`
+	Schemas       map[string]string `avro:"schemas"`
 }
 
 // UpdateFetchRequest is a generated struct.
@@ -76,6 +77,7 @@ type UpdateFetchRequest struct {
 
 // UpdateFetchResponse is a generated struct.
 type UpdateFetchResponse struct {
-	FigFamilies []FigFamily `avro:"figFamilies"`
-	Cursor      string      `avro:"cursor"`
+	FigFamilies []FigFamily       `avro:"figFamilies"`
+	Cursor      string            `avro:"cursor"`
+	Schemas     map[string]string `avro:"schemas"`
 }
