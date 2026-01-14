@@ -330,9 +330,6 @@ func (c *Client) GetFig(key string, target any, ctx *evaluation.EvaluationContex
 	if err != nil {
 		return fmt.Errorf("failed to parse writer schema from SchemaContent: %w", err)
 	}
-	if err != nil {
-		return fmt.Errorf("failed to parse writer schema (URI: %s): %w", figFamily.Definition.SchemaURI, err)
-	}
 
 	if err := avro.Unmarshal(writerSchema, payload, target); err != nil {
 		return fmt.Errorf("failed to unmarshal avro with schema evolution: %w", err)
