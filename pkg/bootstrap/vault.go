@@ -56,3 +56,9 @@ func (s *VaultStrategy) Bootstrap(ctx context.Context, namespaces []string) (*Re
 		Cursors:     cursors,
 	}, nil
 }
+
+func (s *VaultStrategy) String() string {
+	return "VaultStrategy"
+}
+
+var _ Strategy = (*VaultStrategy)(nil)

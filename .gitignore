@@ -1,6 +1,7 @@
 # Binaries
 # Created by go build
 /example
+/go-client
 *.exe
 *.test
 *.prof

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"maps"
 	"time"
 
 	"github.com/figchain/go-client/pkg/model"
@@ -25,7 +26,7 @@ func NewServerStrategy(tr transport.Transport, environmentID string, asOf string
 		if err == nil {
 			asOfTime = &t
 		} else {
-			log.Printf("Invalid AsOfTimestamp format ignored: %s", asOf)
+			log.Printf("WARN Invalid AsOfTimestamp format ignored: %s", asOf)
 		}
 	}
 	return &ServerStrategy{
@@ -57,10 +58,8 @@ func (s *ServerStrategy) Bootstrap(ctx context.Context, namespaces []string) (*R
 		if resp.Cursor != "" {
 			cursors[ns] = resp.Cursor
 		}
-		for k, v := range resp.Schemas {
-			schemas[k] = v
-		}
-		log.Printf("Bootstrap: Fetched %d families for namespace %s, Cursor: %s", len(resp.FigFamilies), ns, resp.Cursor)
+		maps.Copy(schemas, resp.Schemas)
+		log.Printf("INFO Bootstrap successful")
 	}
 
 	return &Result{
@@ -69,3 +68,9 @@ func (s *ServerStrategy) Bootstrap(ctx context.Context, namespaces []string) (*R
 		Schemas:     schemas,
 	}, nil
 }
+
+func (s *ServerStrategy) String() string {
+	return "ServerStrategy"
+}
+
+var _ Strategy = (*ServerStrategy)(nil)

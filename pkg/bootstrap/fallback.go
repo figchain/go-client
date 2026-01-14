@@ -28,13 +28,19 @@ func (s *FallbackStrategy) Bootstrap(ctx context.Context, namespaces []string) (
 		return result, nil
 	}
 
-	log.Printf("Server bootstrap failed: %v. Falling back to Vault.", serverErr)
+	log.Printf("WARN Server bootstrap failed: %v. Falling back to Vault.", serverErr)
 
 	// 2. Try Vault
 	result, vaultErr := s.vaultStrategy.Bootstrap(ctx, namespaces)
 	if vaultErr != nil {
-		return nil, fmt.Errorf("server bootstrap failed: %v; fallback to vault also failed: %w", serverErr, vaultErr)
+		return nil, fmt.Errorf("ERROR server bootstrap failed: %v; fallback to vault also failed: %w", serverErr, vaultErr)
 	}
 
 	return result, nil
 }
+
+func (s *FallbackStrategy) String() string {
+	return "FallbackStrategy"
+}
+
+var _ Strategy = (*FallbackStrategy)(nil)

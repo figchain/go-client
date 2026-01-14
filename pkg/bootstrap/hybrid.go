@@ -33,11 +33,7 @@ func (s *HybridStrategy) Bootstrap(ctx context.Context, namespaces []string) (*R
 	// 1. Load from Vault
 	vaultResult, err := s.vaultStrategy.Bootstrap(ctx, namespaces)
 	if err != nil {
-		log.Printf("Vault bootstrap failed: %v. Falling back to full server fetch.", err)
-		// Fallback to full server fetch? Or fail?
-		// Java client seems to proceed or allow fallback logic.
-		// If explicit "Hybrid", maybe we should try server for everything?
-		// For now, let's treat Vault failure as "no data from vault"
+		log.Printf("WARN Vault bootstrap failed: %v. Falling back to full server fetch.", err)
 		vaultResult = &Result{}
 	}
 
@@ -48,9 +44,7 @@ func (s *HybridStrategy) Bootstrap(ctx context.Context, namespaces []string) (*R
 
 	finalCursors := make(map[string]string)
 	if vaultResult.Cursors != nil {
-		for k, v := range vaultResult.Cursors {
-			finalCursors[k] = v
-		}
+		maps.Copy(finalCursors, vaultResult.Cursors)
 	}
 
 	// 2. Identify missing namespaces
@@ -63,7 +57,7 @@ func (s *HybridStrategy) Bootstrap(ctx context.Context, namespaces []string) (*R
 
 	// 3. Fetch missing from Server
 	if len(missingNamespaces) > 0 {
-		log.Printf("Fetching missing namespaces from server: %v", missingNamespaces)
+		log.Printf("INFO Fetching missing namespaces from server: %v", missingNamespaces)
 		serverResult, err := s.serverStrategy.Bootstrap(ctx, missingNamespaces)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch missing namespaces from server: %w", err)
@@ -106,7 +100,7 @@ func (s *HybridStrategy) Bootstrap(ctx context.Context, namespaces []string) (*R
 		}
 		resp, err := s.transport.FetchUpdate(ctx, req)
 		if err != nil {
-			return nil, fmt.Errorf("failed to catch up for %s: %w", ns, err)
+			return nil, fmt.Errorf("WARN failed to catch up for %s: %w", ns, err)
 		}
 
 		if len(resp.FigFamilies) > 0 {
@@ -122,3 +116,9 @@ func (s *HybridStrategy) Bootstrap(ctx context.Context, namespaces []string) (*R
 		Cursors:     finalCursors,
 	}, nil
 }
+
+func (s *HybridStrategy) String() string {
+	return "HybridStrategy"
+}
+
+var _ Strategy = (*HybridStrategy)(nil)

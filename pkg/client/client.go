@@ -44,6 +44,8 @@ type Client struct {
 	mu                sync.RWMutex
 	wg                sync.WaitGroup
 	closeCh           chan struct{}
+	ctx               context.Context
+	cancel            context.CancelFunc
 }
 
 // NewClientFromConfig creates a new Client from a JSON configuration file.
@@ -232,6 +234,7 @@ func New(opts ...config.Option) (*Client, error) {
 		schemas:           make(map[string]string),
 		closeCh:           make(chan struct{}),
 	}
+	c.ctx, c.cancel = context.WithCancel(context.Background())
 
 	// Select Bootstrap Strategy
 	var strategy bootstrap.Strategy
@@ -254,14 +257,14 @@ func New(opts ...config.Option) (*Client, error) {
 		case config.BootstrapStrategyServer:
 			strategy = serverStrategy
 		default:
-			log.Printf("Unknown bootstrap strategy %q, using Default (ServerFirst with Fallback)", cfg.BootstrapStrategy)
+			log.Printf("WARN Unknown bootstrap strategy %q, using Default (ServerFirst with Fallback)", cfg.BootstrapStrategy)
 			strategy = bootstrap.NewFallbackStrategy(serverStrategy, vaultStrategy)
 		}
 	} else {
 		strategy = serverStrategy
 	}
 
-	log.Printf("Bootstrapping with strategy: %T", strategy)
+	log.Printf("INFO Bootstrapping with strategy: %T", strategy.String())
 
 	// Execute Bootstrap
 	result, err := strategy.Bootstrap(context.Background(), cfg.Namespaces)
@@ -290,6 +293,7 @@ func New(opts ...config.Option) (*Client, error) {
 // Close closes the client and releases resources.
 func (c *Client) Close() error {
 	close(c.closeCh)
+	c.cancel()
 	c.wg.Wait()
 	return c.transport.Close()
 }
@@ -430,8 +434,12 @@ func (c *Client) pollUpdates() {
 			Cursor:        cursor,
 			EnvironmentID: c.cfg.EnvironmentID,
 		}
-		resp, err := c.transport.FetchUpdate(context.Background(), req)
+		resp, err := c.transport.FetchUpdate(c.ctx, req)
 		if err != nil {
+			if c.ctx.Err() == context.Canceled {
+				// Shutdown in progress, exit quietly
+				return
+			}
 			log.Printf("Failed to fetch updates for %s: %v", ns, err)
 			// Prevent tight loop on error (backoff)
 			select {
@@ -443,29 +451,47 @@ func (c *Client) pollUpdates() {
 		}
 
 		if len(resp.FigFamilies) > 0 {
+			// Collect notifications
+			var listenerNotifications []func()
+			var watcherNotifications []func()
+
 			c.mu.Lock()
 			for _, ff := range resp.FigFamilies {
 				c.store.Put(ff)
 
-				// Notify type-specific listeners
+				// Collect listener notifications
 				if callbacks, ok := c.listeners[ff.Definition.Key]; ok {
 					for _, cb := range callbacks {
-						cb(ff)
+						// Capture ff
+						ffCopy := ff
+						listenerNotifications = append(listenerNotifications, func() { cb(ffCopy) })
 					}
 				}
 
-				// Notify watchers
+				// Collect watcher notifications
 				if chans, ok := c.watchers[ff.Definition.Key]; ok {
 					for _, ch := range chans {
-						select {
-						case ch <- ff:
-						default:
-							// Drop update if channel is full
-						}
+						// Capture ff
+						ffCopy := ff
+						watcherNotifications = append(watcherNotifications, func() {
+							select {
+							case ch <- ffCopy:
+							default:
+								// Drop update if channel is full
+							}
+						})
 					}
 				}
 			}
 			c.mu.Unlock()
+
+			// Notify after unlocking
+			for _, notify := range listenerNotifications {
+				notify()
+			}
+			for _, notify := range watcherNotifications {
+				notify()
+			}
 		}
 
 		if resp.Cursor != "" || len(resp.Schemas) > 0 {
@@ -492,6 +518,7 @@ func (c *Client) pollUpdates() {
 // For request-scoped configuration, use GetFig() with the appropriate context when needed.
 func (c *Client) RegisterListener(key string, prototype AvroRecord, callback func(AvroRecord)) {
 	rawCallback := func(schemaURI string, payload []byte) {
+		log.Printf("DEBUG rawCallback called with schemaURI %s, payload len %d", schemaURI, len(payload))
 		// Create new instance of prototype type using reflection
 		// prototype should be a pointer to a struct
 		t := reflect.TypeOf(prototype)
@@ -506,19 +533,18 @@ func (c *Client) RegisterListener(key string, prototype AvroRecord, callback fun
 		schemaContent, ok := c.schemas[schemaURI]
 		c.mu.RUnlock()
 		if !ok {
-			log.Printf("Listener schema not found for URI: %s", schemaURI)
+			log.Printf("WARN Listener schema not found for URI: %s", schemaURI)
 			return
 		}
 
-		log.Printf("DEBUG Listener SchemaContent for URI %s: %s", schemaURI, schemaContent)
 		writerSchema, err := avro.Parse(schemaContent)
 		if err != nil {
-			log.Printf("Listener writer schema parse failed for %s: %v", key, err)
+			log.Printf("ERROR Listener writer schema parse failed for %s: %v", key, err)
 			return
 		}
 
 		if err := avro.Unmarshal(writerSchema, payload, target); err != nil {
-			log.Printf("Listener unmarshal failed for %s: %v", key, err)
+			log.Printf("ERROR Listener unmarshal failed for %s: %v", key, err)
 			return
 		}
 
@@ -526,7 +552,7 @@ func (c *Client) RegisterListener(key string, prototype AvroRecord, callback fun
 		if record, ok := target.(AvroRecord); ok {
 			callback(record)
 		} else {
-			log.Printf("Listener callback failed for key %s: created object of type %T does not implement AvroRecord", key, target)
+			log.Printf("ERROR Listener callback failed for key %s: created object of type %T does not implement AvroRecord", key, target)
 		}
 	}
 
@@ -546,29 +572,31 @@ func (c *Client) RegisterRawListener(key string, callback func(string, []byte)) 
 
 	// We create a wrapper func that handles the logic
 	wrapper := func(ff model.FigFamily) {
+		log.Printf("DEBUG Listener wrapper called for key %s, fig key %s", key, ff.Definition.Key)
 		// Empty evaluation context (embeds context.Background())
 		ctx := evaluation.NewEvaluationContext(nil)
 		fig, err := c.evaluator.Evaluate(&ff, ctx)
 		if err != nil || fig == nil {
-			log.Printf("Listener evaluation failed for %s: %v", key, err)
+			log.Printf("ERROR Listener evaluation failed for %s: %v", key, err)
 			return
 		}
 
 		payload := fig.Payload
 		if fig.IsEncrypted {
 			if c.encryptionService == nil {
-				log.Printf("Listener received encrypted fig for key '%s' but client is not configured for decryption", key)
+				log.Printf("ERROR Listener received encrypted fig for key '%s' but client is not configured for decryption", key)
 				return
 			}
 			// Use the evaluation context (which implements context.Context)
 			p, err := c.encryptionService.Decrypt(ctx, fig, ff.Definition.Namespace)
 			if err != nil {
-				log.Printf("Listener decryption failed for %s: %v", key, err)
+				log.Printf("ERROR Listener decryption failed for %s: %v", key, err)
 				return
 			}
 			payload = p
 		}
 
+		log.Printf("DEBUG Listener calling callback for key %s", key)
 		callback(ff.Definition.SchemaURI, payload)
 	}
 
