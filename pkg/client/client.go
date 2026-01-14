@@ -274,9 +274,7 @@ func New(opts ...config.Option) (*Client, error) {
 
 	// Set Cursors
 	c.mu.Lock()
-	for ns, cursor := range result.Cursors {
-		c.namespaceCursors[ns] = cursor
-	}
+	maps.Copy(c.namespaceCursors, result.Cursors)
 	c.mu.Unlock()
 
 	// Start polling
@@ -295,39 +293,9 @@ func (c *Client) Close() error {
 
 // GetFig retrieves a configuration and deserializes it into target.
 func (c *Client) GetFig(key string, target any, ctx *evaluation.EvaluationContext) error {
-	// Assume single namespace for now or pick first
-	if len(c.cfg.Namespaces) == 0 {
-		return fmt.Errorf("no namespaces configured")
-	}
-	namespace := c.cfg.Namespaces[0]
-
-	figFamily, ok := c.store.Get(namespace, key)
-	if !ok {
-		return fmt.Errorf("fig not found: %s", key)
-	}
-
-	fig, err := c.evaluator.Evaluate(figFamily, ctx)
+	payload, err := c.GetFigRaw(key, ctx)
 	if err != nil {
-		return fmt.Errorf("evaluation failed: %w", err)
-	}
-	if fig == nil {
-		return fmt.Errorf("no matching fig found for key: %s", key)
-	}
-
-	log.Printf("DEBUG GetFig: key=%s, IsEncrypted=%v, PayloadLen=%d", key, fig.IsEncrypted, len(fig.Payload))
-
-	// Decrypt
-	payload := fig.Payload
-	if fig.IsEncrypted {
-		if c.encryptionService == nil {
-			return fmt.Errorf("received encrypted fig for key '%s' but client is not configured for decryption", key)
-		}
-		p, err := c.encryptionService.Decrypt(ctx, fig, namespace)
-		if err != nil {
-			log.Printf("Failed to decrypt fig with key '%s' in namespace '%s': %v", key, namespace, err)
-			return fmt.Errorf("failed to decrypt fig with key '%s' in namespace '%s': %w", key, namespace, err)
-		}
-		payload = p
+		return err
 	}
 
 	// Deserialize Avro
@@ -494,19 +462,7 @@ func (c *Client) pollUpdates() {
 // (like request-scoped context), this listener may receive default values or fail to match rules.
 // For request-scoped configuration, use GetFig() with the appropriate context when needed.
 func (c *Client) RegisterListener(key string, prototype AvroRecord, callback func(AvroRecord)) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// We create a wrapper func that handles the logic
-	wrapper := func(ff model.FigFamily) {
-		// Empty evaluation context (embeds context.Background())
-		ctx := evaluation.NewEvaluationContext(nil)
-		fig, err := c.evaluator.Evaluate(&ff, ctx)
-		if err != nil || fig == nil {
-			log.Printf("Listener evaluation failed for %s: %v", key, err)
-			return
-		}
-
+	rawCallback := func(payload []byte) {
 		// Create new instance of prototype type using reflection
 		// prototype should be a pointer to a struct
 		t := reflect.TypeOf(prototype)
@@ -522,21 +478,6 @@ func (c *Client) RegisterListener(key string, prototype AvroRecord, callback fun
 			return
 		}
 
-		payload := fig.Payload
-		if fig.IsEncrypted {
-			if c.encryptionService == nil {
-				log.Printf("Listener received encrypted fig for key '%s' but client is not configured for decryption", key)
-				return
-			}
-			// Use the evaluation context (which implements context.Context)
-			p, err := c.encryptionService.Decrypt(ctx, fig, ff.Definition.Namespace)
-			if err != nil {
-				log.Printf("Listener decryption failed for %s: %v", key, err)
-				return
-			}
-			payload = p
-		}
-
 		if err := avro.Unmarshal(schema, payload, target); err != nil {
 			log.Printf("Listener unmarshal failed for %s: %v", key, err)
 			return
@@ -550,11 +491,16 @@ func (c *Client) RegisterListener(key string, prototype AvroRecord, callback fun
 		}
 	}
 
-	c.listeners[key] = append(c.listeners[key], wrapper)
+	c.RegisterRawListener(key, rawCallback)
 }
 
 // RegisterRawListener registers a callback for updates to a specific key, returning the raw payload.
 // This allows the caller to handle deserialization.
+//
+// IMPORTANT: This feature should be used for SERVER-SCOPED configuration only (e.g. global flags).
+// The update is evaluated with an empty context. If your rules depend on user-specific attributes
+// (like request-scoped context), this listener may receive default values or fail to match rules.
+// For request-scoped configuration, use GetFig() with the appropriate context when needed.
 func (c *Client) RegisterRawListener(key string, callback func([]byte)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
