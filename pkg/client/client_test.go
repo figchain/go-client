@@ -51,12 +51,19 @@ func TestClient_GetFig(t *testing.T) {
 		Cursor: "1",
 		FigFamilies: []model.FigFamily{
 			{
-				Definition: model.FigDefinition{Key: "test-key", Namespace: "default"},
+				Definition: model.FigDefinition{
+					Key:       "test-key",
+					Namespace: "default",
+					SchemaURI: `{"type": "record", "name": "MockAvroRecord", "fields": [{"name": "value", "type": "string"}]}`,
+				},
 				Figs: []model.Fig{
 					{Version: "v1", Payload: []byte("\x06foo")}, // Avro string "foo"
 				},
 				DefaultVersion: ptr("v1"),
 			},
+		},
+		Schemas: map[string]string{
+			`{"type": "record", "name": "MockAvroRecord", "fields": [{"name": "value", "type": "string"}]}`: `{"type": "record", "name": "MockAvroRecord", "fields": [{"name": "value", "type": "string"}]}`,
 		},
 	}
 
@@ -114,12 +121,19 @@ func TestClient_Watch(t *testing.T) {
 		Cursor: "1",
 		FigFamilies: []model.FigFamily{
 			{
-				Definition: model.FigDefinition{Key: "watch-key", Namespace: "default"},
+				Definition: model.FigDefinition{
+					Key:       "watch-key",
+					Namespace: "default",
+					SchemaURI: `{"type": "record", "name": "MockAvroRecord", "fields": [{"name": "value", "type": "string"}]}`,
+				},
 				Figs: []model.Fig{
 					{Version: "v1", Payload: []byte("\x06foo")},
 				},
 				DefaultVersion: ptr("v1"),
 			},
+		},
+		Schemas: map[string]string{
+			`{"type": "record", "name": "MockAvroRecord", "fields": [{"name": "value", "type": "string"}]}`: `{"type": "record", "name": "MockAvroRecord", "fields": [{"name": "value", "type": "string"}]}`,
 		},
 	}
 
@@ -149,7 +163,11 @@ func TestClient_Watch(t *testing.T) {
 					Cursor: "2",
 					FigFamilies: []model.FigFamily{
 						{
-							Definition: model.FigDefinition{Key: "watch-key", Namespace: "default"},
+							Definition: model.FigDefinition{
+								Key:       "watch-key",
+								Namespace: "default",
+								SchemaURI: `{"type": "record", "name": "MockAvroRecord", "fields": [{"name": "value", "type": "string"}]}`,
+							},
 							Figs: []model.Fig{
 								{Version: "v2", Payload: []byte("\x06bar")},
 							},

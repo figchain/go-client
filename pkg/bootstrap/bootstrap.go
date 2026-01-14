@@ -10,6 +10,7 @@ import (
 type Result struct {
 	FigFamilies []model.FigFamily
 	Cursors     map[string]string
+	Schemas     map[string]string
 }
 
 // Strategy defines the interface for bootstrapping the client.

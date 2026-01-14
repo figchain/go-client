@@ -40,6 +40,7 @@ type Client struct {
 	watchers          map[string][]chan model.FigFamily
 	listeners         map[string][]func(model.FigFamily)
 	encryptionService *encryption.Service
+	schemas           map[string]string
 	mu                sync.RWMutex
 	wg                sync.WaitGroup
 	closeCh           chan struct{}
@@ -228,6 +229,7 @@ func New(opts ...config.Option) (*Client, error) {
 		namespaceCursors:  make(map[string]string),
 		watchers:          make(map[string][]chan model.FigFamily),
 		listeners:         make(map[string][]func(model.FigFamily)),
+		schemas:           make(map[string]string),
 		closeCh:           make(chan struct{}),
 	}
 
@@ -272,9 +274,10 @@ func New(opts ...config.Option) (*Client, error) {
 		c.store.Put(ff)
 	}
 
-	// Set Cursors
+	// Set Cursors and Schemas
 	c.mu.Lock()
 	maps.Copy(c.namespaceCursors, result.Cursors)
+	maps.Copy(c.schemas, result.Schemas)
 	c.mu.Unlock()
 
 	// Start polling
@@ -299,18 +302,37 @@ func (c *Client) GetFig(key string, target any, ctx *evaluation.EvaluationContex
 	}
 
 	// Deserialize Avro
-	record, ok := target.(AvroRecord)
+	_, ok := target.(AvroRecord)
 	if !ok {
 		return fmt.Errorf("target must implement AvroRecord interface with Schema() avro.Schema method")
 	}
 
-	schema, err := avro.Parse(record.Schema().String())
-	if err != nil {
-		return fmt.Errorf("failed to parse schema from target: %w", err)
+	// Get the fig family to access the writer schema
+	if len(c.cfg.Namespaces) == 0 {
+		return fmt.Errorf("no namespaces configured")
+	}
+	namespace := c.cfg.Namespaces[0]
+	figFamily, ok := c.store.Get(namespace, key)
+	if !ok {
+		return fmt.Errorf("fig not found: %s", key)
 	}
 
-	if err := avro.Unmarshal(schema, payload, target); err != nil {
-		return fmt.Errorf("failed to unmarshal avro: %w", err)
+	// Get the writer schema from the schemas map using SchemaURI as key
+	c.mu.RLock()
+	schemaContent, ok := c.schemas[figFamily.Definition.SchemaURI]
+	c.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("schema not found for URI: %s", figFamily.Definition.SchemaURI)
+	}
+
+	log.Printf("DEBUG SchemaContent for URI %s: %s", figFamily.Definition.SchemaURI, schemaContent)
+	writerSchema, err := avro.Parse(schemaContent)
+	if err != nil {
+		return fmt.Errorf("failed to parse writer schema from SchemaContent: %w", err)
+	}
+
+	if err := avro.Unmarshal(writerSchema, payload, target); err != nil {
+		return fmt.Errorf("failed to unmarshal avro with schema evolution: %w", err)
 	}
 
 	return nil
@@ -446,9 +468,16 @@ func (c *Client) pollUpdates() {
 			c.mu.Unlock()
 		}
 
-		if resp.Cursor != "" {
+		if resp.Cursor != "" || len(resp.Schemas) > 0 {
 			c.mu.Lock()
-			c.namespaceCursors[ns] = resp.Cursor
+			if resp.Cursor != "" {
+				c.namespaceCursors[ns] = resp.Cursor
+			}
+			if len(resp.Schemas) > 0 {
+				for k, v := range resp.Schemas {
+					c.schemas[k] = v
+				}
+			}
 			c.mu.Unlock()
 		}
 	}
@@ -462,7 +491,7 @@ func (c *Client) pollUpdates() {
 // (like request-scoped context), this listener may receive default values or fail to match rules.
 // For request-scoped configuration, use GetFig() with the appropriate context when needed.
 func (c *Client) RegisterListener(key string, prototype AvroRecord, callback func(AvroRecord)) {
-	rawCallback := func(payload []byte) {
+	rawCallback := func(schemaURI string, payload []byte) {
 		// Create new instance of prototype type using reflection
 		// prototype should be a pointer to a struct
 		t := reflect.TypeOf(prototype)
@@ -472,13 +501,23 @@ func (c *Client) RegisterListener(key string, prototype AvroRecord, callback fun
 		targetVal := reflect.New(t)
 		target := targetVal.Interface()
 
-		schema, err := avro.Parse(prototype.Schema().String())
-		if err != nil {
-			log.Printf("Listener schema parse failed for %s: %v", key, err)
+		// Get the writer schema from the schemas map
+		c.mu.RLock()
+		schemaContent, ok := c.schemas[schemaURI]
+		c.mu.RUnlock()
+		if !ok {
+			log.Printf("Listener schema not found for URI: %s", schemaURI)
 			return
 		}
 
-		if err := avro.Unmarshal(schema, payload, target); err != nil {
+		log.Printf("DEBUG Listener SchemaContent for URI %s: %s", schemaURI, schemaContent)
+		writerSchema, err := avro.Parse(schemaContent)
+		if err != nil {
+			log.Printf("Listener writer schema parse failed for %s: %v", key, err)
+			return
+		}
+
+		if err := avro.Unmarshal(writerSchema, payload, target); err != nil {
 			log.Printf("Listener unmarshal failed for %s: %v", key, err)
 			return
 		}
@@ -501,7 +540,7 @@ func (c *Client) RegisterListener(key string, prototype AvroRecord, callback fun
 // The update is evaluated with an empty context. If your rules depend on user-specific attributes
 // (like request-scoped context), this listener may receive default values or fail to match rules.
 // For request-scoped configuration, use GetFig() with the appropriate context when needed.
-func (c *Client) RegisterRawListener(key string, callback func([]byte)) {
+func (c *Client) RegisterRawListener(key string, callback func(string, []byte)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -530,7 +569,7 @@ func (c *Client) RegisterRawListener(key string, callback func([]byte)) {
 			payload = p
 		}
 
-		callback(payload)
+		callback(ff.Definition.SchemaURI, payload)
 	}
 
 	c.listeners[key] = append(c.listeners[key], wrapper)
