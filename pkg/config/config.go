@@ -2,6 +2,8 @@ package config
 
 import (
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,6 +68,93 @@ func LoadConfig(path string) (*Config, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
+	// Compatibility mapping: some clients (Java/Python) use canonical env names
+	// like FIGCHAIN_URL or FIGCHAIN_POLLING_INTERVAL_MS. Add fallbacks so the
+	// Go client accepts those names while keeping its existing behavior.
+	if val, ok := os.LookupEnv("FIGCHAIN_URL"); ok && !v.IsSet("base_url") {
+		v.Set("base_url", val)
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_LONG_POLLING_URL"); ok && !v.IsSet("long_polling_url") {
+		v.Set("long_polling_url", val)
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_CLIENT_SECRET"); ok && !v.IsSet("client_secret") {
+		v.Set("client_secret", val)
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_ENVIRONMENT_ID"); ok && !v.IsSet("environment_id") {
+		v.Set("environment_id", val)
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_NAMESPACES"); ok && !v.IsSet("namespaces") {
+		parts := []string{}
+		for _, p := range strings.Split(val, ",") {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				parts = append(parts, p)
+			}
+		}
+		v.Set("namespaces", parts)
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_POLLING_INTERVAL_MS"); ok && !v.IsSet("polling_interval") {
+		if ms, err := strconv.Atoi(val); err == nil {
+			v.Set("polling_interval", time.Duration(ms)*time.Millisecond)
+		}
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_MAX_RETRIES"); ok && !v.IsSet("max_retries") {
+		if i, err := strconv.Atoi(val); err == nil {
+			v.Set("max_retries", i)
+		}
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_RETRY_DELAY_MS"); ok && !v.IsSet("retry_delay") {
+		if ms, err := strconv.Atoi(val); err == nil {
+			v.Set("retry_delay", time.Duration(ms)*time.Millisecond)
+		}
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_AS_OF_TIMESTAMP"); ok && !v.IsSet("as_of_timestamp") {
+		v.Set("as_of_timestamp", val)
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_BOOTSTRAP_STRATEGY"); ok && !v.IsSet("bootstrap_strategy") {
+		v.Set("bootstrap_strategy", val)
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_VAULT_ENABLED"); ok && !v.IsSet("vault_enabled") {
+		if b, err := strconv.ParseBool(val); err == nil {
+			v.Set("vault_enabled", b)
+		}
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_VAULT_BUCKET"); ok && !v.IsSet("vault_bucket") {
+		v.Set("vault_bucket", val)
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_VAULT_PREFIX"); ok && !v.IsSet("vault_prefix") {
+		v.Set("vault_prefix", val)
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_VAULT_REGION"); ok && !v.IsSet("vault_region") {
+		v.Set("vault_region", val)
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_VAULT_ENDPOINT"); ok && !v.IsSet("vault_endpoint") {
+		v.Set("vault_endpoint", val)
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_VAULT_PATH_STYLE_ACCESS"); ok && !v.IsSet("vault_path_style") {
+		if b, err := strconv.ParseBool(val); err == nil {
+			v.Set("vault_path_style", b)
+		}
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_VAULT_PRIVATE_KEY_PATH"); ok && !v.IsSet("vault_private_key_path") {
+		v.Set("vault_private_key_path", val)
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_ENCRYPTION_PRIVATE_KEY_PATH"); ok && !v.IsSet("encryption_private_key_path") {
+		v.Set("encryption_private_key_path", val)
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_AUTH_PRIVATE_KEY_PATH"); ok && !v.IsSet("auth_private_key_path") {
+		v.Set("auth_private_key_path", val)
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_AUTH_CLIENT_ID"); ok && !v.IsSet("auth_client_id") {
+		v.Set("auth_client_id", val)
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_AUTH_CREDENTIAL_ID"); ok && !v.IsSet("auth_credential_id") {
+		v.Set("auth_credential_id", val)
+	}
+	if val, ok := os.LookupEnv("FIGCHAIN_TENANT_ID"); ok && !v.IsSet("tenant_id") {
+		v.Set("tenant_id", val)
+	}
+
 	// Defaults
 	v.SetDefault("base_url", "https://app.figchain.io/api/")
 	v.SetDefault("polling_interval", "60s")
@@ -99,6 +188,37 @@ func LoadConfig(path string) (*Config, error) {
 	// Handle legacy "namespace" field (single string)
 	if v.IsSet("namespace") && !v.IsSet("namespaces") {
 		v.Set("namespaces", []string{v.GetString("namespace")})
+	}
+
+	// Normalize namespaces types: support string, []interface{} and []string
+	if v.IsSet("namespaces") {
+		switch val := v.Get("namespaces").(type) {
+		case string:
+			parts := []string{}
+			for _, p := range strings.Split(val, ",") {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					parts = append(parts, p)
+				}
+			}
+			v.Set("namespaces", parts)
+		case []interface{}:
+			parts := []string{}
+			for _, it := range val {
+				if s, ok := it.(string); ok {
+					s = strings.TrimSpace(s)
+					if s != "" {
+						parts = append(parts, s)
+					}
+				}
+			}
+			v.Set("namespaces", parts)
+		}
+	}
+
+	// Ensure auth client id is string if set
+	if v.IsSet("auth_client_id") {
+		v.Set("auth_client_id", v.GetString("auth_client_id"))
 	}
 
 	var config Config

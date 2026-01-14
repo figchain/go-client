@@ -57,10 +57,17 @@ func NewClientFromConfig(path string, opts ...config.Option) (*Client, error) {
 	// 2. Read JSON
 	// We define a struct matching client-config.json
 	type ClientConfig struct {
-		Namespace    string `json:"namespace"`
-		CredentialID string `json:"credentialId"`
-		PrivateKey   string `json:"privateKey"`
+		Namespace     string `json:"namespace"`
+		CredentialID  string `json:"credentialId"`
+		PrivateKey    string `json:"privateKey"`
+		EnvironmentID string `json:"environmentId"`
+		TenantID      string `json:"tenantId"`
 		// Backup configuration is handled separately or via Env
+		VaultEnabled  bool   `json:"vaultEnabled"`
+		VaultBucket   string `json:"vaultBucket"`
+		VaultPrefix   string `json:"vaultPrefix"`
+		VaultRegion   string `json:"vaultRegion"`
+		VaultEndpoint string `json:"vaultEndpoint"`
 	}
 
 	fileBytes, err := os.ReadFile(path)
@@ -86,6 +93,30 @@ func NewClientFromConfig(path string, opts ...config.Option) (*Client, error) {
 
 	if cfg.AuthPrivateKeyPEM == "" && cfg.AuthPrivateKeyPath == "" && cc.PrivateKey != "" {
 		cfg.AuthPrivateKeyPEM = cc.PrivateKey
+	}
+
+	if cc.VaultEnabled {
+		cfg.VaultEnabled = true
+	}
+	if cc.VaultBucket != "" {
+		cfg.VaultBucket = cc.VaultBucket
+	}
+	if cc.VaultPrefix != "" {
+		cfg.VaultPrefix = cc.VaultPrefix
+	}
+	if cc.VaultRegion != "" {
+		cfg.VaultRegion = cc.VaultRegion
+	}
+	if cc.VaultEndpoint != "" {
+		cfg.VaultEndpoint = cc.VaultEndpoint
+	}
+
+	if cc.EnvironmentID != "" {
+		cfg.EnvironmentID = cc.EnvironmentID
+	}
+
+	if cc.TenantID != "" {
+		cfg.TenantID = cc.TenantID
 	}
 
 	// 4. Apply Options (Overrides everything)
@@ -116,12 +147,13 @@ func New(opts ...config.Option) (*Client, error) {
 	}
 
 	var tokenProvider transport.TokenProvider
+	var pk *rsa.PrivateKey
+
 	if cfg.AuthPrivateKeyPath != "" || cfg.AuthPrivateKeyPEM != "" {
 		if len(cfg.Namespaces) > 1 {
 			return nil, fmt.Errorf("private key authentication can only be used with a single namespace")
 		}
 
-		var pk *rsa.PrivateKey
 		var err error
 		if cfg.AuthPrivateKeyPEM != "" {
 			pk, err = util.ParseRSAPrivateKey([]byte(cfg.AuthPrivateKeyPEM))
@@ -161,6 +193,23 @@ func New(opts ...config.Option) (*Client, error) {
 			return nil, fmt.Errorf("failed to create encryption service: %w", err)
 		}
 		encService = svc
+	} else if pk != nil {
+		encService = encryption.NewServiceWithKey(tr, pk)
+	}
+
+	if encService != nil && cfg.VaultEnabled {
+		encService.VaultEnabled = true
+		encService.VaultConfig = encryption.VaultConfig{
+			Bucket:   cfg.VaultBucket,
+			Prefix:   cfg.VaultPrefix,
+			Region:   cfg.VaultRegion,
+			Endpoint: cfg.VaultEndpoint,
+		}
+		// Prefer CredentialID (targetId)
+		encService.ClientID = cfg.AuthCredentialID
+		if encService.ClientID == "" {
+			encService.ClientID = cfg.AuthClientID
+		}
 	}
 
 	c := &Client{
@@ -290,6 +339,47 @@ func (c *Client) GetFig(key string, target any, ctx *evaluation.EvaluationContex
 	}
 
 	return nil
+}
+
+// GetFigRaw retrieves the raw (decrypted if necessary) payload for a specific key.
+// This allows the caller to handle deserialization (e.g. using generated code directly).
+func (c *Client) GetFigRaw(key string, ctx *evaluation.EvaluationContext) ([]byte, error) {
+	// Assume single namespace for now or pick first
+	if len(c.cfg.Namespaces) == 0 {
+		return nil, fmt.Errorf("no namespaces configured")
+	}
+	namespace := c.cfg.Namespaces[0]
+
+	figFamily, ok := c.store.Get(namespace, key)
+	if !ok {
+		return nil, fmt.Errorf("fig not found: %s", key)
+	}
+
+	fig, err := c.evaluator.Evaluate(figFamily, ctx)
+	if err != nil {
+		return nil, fmt.Errorf("evaluation failed: %w", err)
+	}
+	if fig == nil {
+		return nil, fmt.Errorf("no matching fig found for key: %s", key)
+	}
+
+	log.Printf("DEBUG GetFigRaw: key=%s, IsEncrypted=%v, PayloadLen=%d", key, fig.IsEncrypted, len(fig.Payload))
+
+	// Decrypt
+	payload := fig.Payload
+	if fig.IsEncrypted {
+		if c.encryptionService == nil {
+			return nil, fmt.Errorf("received encrypted fig for key '%s' but client is not configured for decryption", key)
+		}
+		p, err := c.encryptionService.Decrypt(ctx, fig, namespace)
+		if err != nil {
+			log.Printf("Failed to decrypt fig with key '%s' in namespace '%s': %v", key, namespace, err)
+			return nil, fmt.Errorf("failed to decrypt fig with key '%s' in namespace '%s': %w", key, namespace, err)
+		}
+		payload = p
+	}
+
+	return payload, nil
 }
 
 // Watch returns a channel that receives updates for a specific key.
@@ -451,6 +541,43 @@ func (c *Client) RegisterListener(key string, prototype AvroRecord, callback fun
 		} else {
 			log.Printf("Listener callback failed for key %s: created object of type %T does not implement AvroRecord", key, target)
 		}
+	}
+
+	c.listeners[key] = append(c.listeners[key], wrapper)
+}
+
+// RegisterRawListener registers a callback for updates to a specific key, returning the raw payload.
+// This allows the caller to handle deserialization.
+func (c *Client) RegisterRawListener(key string, callback func([]byte)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// We create a wrapper func that handles the logic
+	wrapper := func(ff model.FigFamily) {
+		// Empty evaluation context (embeds context.Background())
+		ctx := evaluation.NewEvaluationContext(nil)
+		fig, err := c.evaluator.Evaluate(&ff, ctx)
+		if err != nil || fig == nil {
+			log.Printf("Listener evaluation failed for %s: %v", key, err)
+			return
+		}
+
+		payload := fig.Payload
+		if fig.IsEncrypted {
+			if c.encryptionService == nil {
+				log.Printf("Listener received encrypted fig for key '%s' but client is not configured for decryption", key)
+				return
+			}
+			// Use the evaluation context (which implements context.Context)
+			p, err := c.encryptionService.Decrypt(ctx, fig, ff.Definition.Namespace)
+			if err != nil {
+				log.Printf("Listener decryption failed for %s: %v", key, err)
+				return
+			}
+			payload = p
+		}
+
+		callback(payload)
 	}
 
 	c.listeners[key] = append(c.listeners[key], wrapper)

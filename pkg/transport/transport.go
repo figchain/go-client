@@ -171,7 +171,7 @@ func (t *HTTPTransport) GetNamespaceKey(ctx context.Context, namespace string) (
 		if env.Key.NamespaceID == namespace {
 			nsKeys = append(nsKeys, &model.NamespaceKey{
 				WrappedKey: env.EncryptedBlob,
-				KeyID:      fmt.Sprintf("%d", env.Key.NskVersion),
+				KeyID:      fmt.Sprintf("nsk-v%d", env.Key.NskVersion),
 			})
 		}
 	}
