@@ -19,10 +19,11 @@ import (
 )
 
 type VaultConfig struct {
-	Bucket   string
-	Prefix   string
-	Region   string
-	Endpoint string
+	Bucket    string
+	Prefix    string
+	Region    string
+	Endpoint  string
+	PathStyle bool
 }
 
 type Service struct {
@@ -108,7 +109,7 @@ func (s *Service) getNSK(ctx context.Context, namespace, keyID string) ([]byte, 
 				break
 			}
 		}
-		if matchingKey == nil && keyID == "" && len(nsKeys) > 0 {
+		if matchingKey == nil && keyID == "" && len(nsKeys) == 1 {
 			matchingKey = nsKeys[0]
 		}
 	} else {
@@ -166,7 +167,7 @@ func (s *Service) fetchFromS3(ctx context.Context, namespace string) (*model.Nam
 		if s.VaultConfig.Endpoint != "" {
 			o.BaseEndpoint = aws.String(s.VaultConfig.Endpoint)
 		}
-		o.UsePathStyle = true // Often needed for custom endpoints like MinIO
+		o.UsePathStyle = s.VaultConfig.PathStyle
 	})
 
 	prefix := s.VaultConfig.Prefix

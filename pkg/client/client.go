@@ -63,11 +63,12 @@ func NewClientFromConfig(path string, opts ...config.Option) (*Client, error) {
 		EnvironmentID string `json:"environmentId"`
 		TenantID      string `json:"tenantId"`
 		// Backup configuration is handled separately or via Env
-		VaultEnabled  bool   `json:"vaultEnabled"`
-		VaultBucket   string `json:"vaultBucket"`
-		VaultPrefix   string `json:"vaultPrefix"`
-		VaultRegion   string `json:"vaultRegion"`
-		VaultEndpoint string `json:"vaultEndpoint"`
+		VaultEnabled   *bool  `json:"vaultEnabled"`
+		VaultBucket    string `json:"vaultBucket"`
+		VaultPrefix    string `json:"vaultPrefix"`
+		VaultRegion    string `json:"vaultRegion"`
+		VaultEndpoint  string `json:"vaultEndpoint"`
+		VaultPathStyle bool   `json:"vaultPathStyle"`
 	}
 
 	fileBytes, err := os.ReadFile(path)
@@ -95,8 +96,11 @@ func NewClientFromConfig(path string, opts ...config.Option) (*Client, error) {
 		cfg.AuthPrivateKeyPEM = cc.PrivateKey
 	}
 
-	if cc.VaultEnabled {
-		cfg.VaultEnabled = true
+	if cc.VaultEnabled != nil {
+		cfg.VaultEnabled = *cc.VaultEnabled
+	}
+	if cc.VaultPathStyle {
+		cfg.VaultPathStyle = true
 	}
 	if cc.VaultBucket != "" {
 		cfg.VaultBucket = cc.VaultBucket
@@ -125,6 +129,8 @@ func NewClientFromConfig(path string, opts ...config.Option) (*Client, error) {
 	}
 
 	// 5. Create Client using the constructed config object
+	log.Printf("DEBUG NewClientFromConfig: CredID=%s, TenantID=%s, EnvID=%s, Namespaces=%v, VaultEnabled=%v, PKLen=%d",
+		cfg.AuthCredentialID, cfg.TenantID, cfg.EnvironmentID, cfg.Namespaces, cfg.VaultEnabled, len(cfg.AuthPrivateKeyPEM))
 	// We use WithConfig to pass the fully populated configuration to New()
 	return New(config.WithConfig(cfg))
 }
@@ -200,10 +206,11 @@ func New(opts ...config.Option) (*Client, error) {
 	if encService != nil && cfg.VaultEnabled {
 		encService.VaultEnabled = true
 		encService.VaultConfig = encryption.VaultConfig{
-			Bucket:   cfg.VaultBucket,
-			Prefix:   cfg.VaultPrefix,
-			Region:   cfg.VaultRegion,
-			Endpoint: cfg.VaultEndpoint,
+			Bucket:    cfg.VaultBucket,
+			Prefix:    cfg.VaultPrefix,
+			Region:    cfg.VaultRegion,
+			Endpoint:  cfg.VaultEndpoint,
+			PathStyle: cfg.VaultPathStyle,
 		}
 		// Prefer CredentialID (targetId)
 		encService.ClientID = cfg.AuthCredentialID

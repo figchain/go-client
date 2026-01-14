@@ -71,88 +71,69 @@ func LoadConfig(path string) (*Config, error) {
 	// Compatibility mapping: some clients (Java/Python) use canonical env names
 	// like FIGCHAIN_URL or FIGCHAIN_POLLING_INTERVAL_MS. Add fallbacks so the
 	// Go client accepts those names while keeping its existing behavior.
-	if val, ok := os.LookupEnv("FIGCHAIN_URL"); ok && !v.IsSet("base_url") {
-		v.Set("base_url", val)
+
+	// Helper maps for environment variable loading
+	stringMap := map[string]string{
+		"FIGCHAIN_URL":                         "base_url",
+		"FIGCHAIN_LONG_POLLING_URL":            "long_polling_url",
+		"FIGCHAIN_CLIENT_SECRET":               "client_secret",
+		"FIGCHAIN_ENVIRONMENT_ID":              "environment_id",
+		"FIGCHAIN_AS_OF_TIMESTAMP":             "as_of_timestamp",
+		"FIGCHAIN_BOOTSTRAP_STRATEGY":          "bootstrap_strategy",
+		"FIGCHAIN_VAULT_BUCKET":                "vault_bucket",
+		"FIGCHAIN_VAULT_PREFIX":                "vault_prefix",
+		"FIGCHAIN_VAULT_REGION":                "vault_region",
+		"FIGCHAIN_VAULT_ENDPOINT":              "vault_endpoint",
+		"FIGCHAIN_VAULT_PRIVATE_KEY_PATH":      "vault_private_key_path",
+		"FIGCHAIN_ENCRYPTION_PRIVATE_KEY_PATH": "encryption_private_key_path",
+		"FIGCHAIN_AUTH_PRIVATE_KEY_PATH":       "auth_private_key_path",
+		"FIGCHAIN_AUTH_CLIENT_ID":              "auth_client_id",
+		"FIGCHAIN_AUTH_CREDENTIAL_ID":          "auth_credential_id",
+		"FIGCHAIN_TENANT_ID":                   "tenant_id",
 	}
-	if val, ok := os.LookupEnv("FIGCHAIN_LONG_POLLING_URL"); ok && !v.IsSet("long_polling_url") {
-		v.Set("long_polling_url", val)
+	for env, key := range stringMap {
+		if val, ok := os.LookupEnv(env); ok && !v.IsSet(key) {
+			v.Set(key, val)
+		}
 	}
-	if val, ok := os.LookupEnv("FIGCHAIN_CLIENT_SECRET"); ok && !v.IsSet("client_secret") {
-		v.Set("client_secret", val)
+
+	boolMap := map[string]string{
+		"FIGCHAIN_VAULT_ENABLED":           "vault_enabled",
+		"FIGCHAIN_VAULT_PATH_STYLE_ACCESS": "vault_path_style",
 	}
-	if val, ok := os.LookupEnv("FIGCHAIN_ENVIRONMENT_ID"); ok && !v.IsSet("environment_id") {
-		v.Set("environment_id", val)
-	}
-	if val, ok := os.LookupEnv("FIGCHAIN_NAMESPACES"); ok && !v.IsSet("namespaces") {
-		parts := []string{}
-		for _, p := range strings.Split(val, ",") {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				parts = append(parts, p)
+	for env, key := range boolMap {
+		if val, ok := os.LookupEnv(env); ok && !v.IsSet(key) {
+			if b, err := strconv.ParseBool(val); err == nil {
+				v.Set(key, b)
 			}
 		}
-		v.Set("namespaces", parts)
 	}
-	if val, ok := os.LookupEnv("FIGCHAIN_POLLING_INTERVAL_MS"); ok && !v.IsSet("polling_interval") {
-		if ms, err := strconv.Atoi(val); err == nil {
-			v.Set("polling_interval", time.Duration(ms)*time.Millisecond)
+
+	intMap := map[string]string{
+		"FIGCHAIN_MAX_RETRIES": "max_retries",
+	}
+	for env, key := range intMap {
+		if val, ok := os.LookupEnv(env); ok && !v.IsSet(key) {
+			if i, err := strconv.Atoi(val); err == nil {
+				v.Set(key, i)
+			}
 		}
 	}
-	if val, ok := os.LookupEnv("FIGCHAIN_MAX_RETRIES"); ok && !v.IsSet("max_retries") {
-		if i, err := strconv.Atoi(val); err == nil {
-			v.Set("max_retries", i)
+
+	durationMap := map[string]string{
+		"FIGCHAIN_POLLING_INTERVAL_MS": "polling_interval",
+		"FIGCHAIN_RETRY_DELAY_MS":      "retry_delay",
+	}
+	for env, key := range durationMap {
+		if val, ok := os.LookupEnv(env); ok && !v.IsSet(key) {
+			if ms, err := strconv.Atoi(val); err == nil {
+				v.Set(key, time.Duration(ms)*time.Millisecond)
+			}
 		}
 	}
-	if val, ok := os.LookupEnv("FIGCHAIN_RETRY_DELAY_MS"); ok && !v.IsSet("retry_delay") {
-		if ms, err := strconv.Atoi(val); err == nil {
-			v.Set("retry_delay", time.Duration(ms)*time.Millisecond)
-		}
-	}
-	if val, ok := os.LookupEnv("FIGCHAIN_AS_OF_TIMESTAMP"); ok && !v.IsSet("as_of_timestamp") {
-		v.Set("as_of_timestamp", val)
-	}
-	if val, ok := os.LookupEnv("FIGCHAIN_BOOTSTRAP_STRATEGY"); ok && !v.IsSet("bootstrap_strategy") {
-		v.Set("bootstrap_strategy", val)
-	}
-	if val, ok := os.LookupEnv("FIGCHAIN_VAULT_ENABLED"); ok && !v.IsSet("vault_enabled") {
-		if b, err := strconv.ParseBool(val); err == nil {
-			v.Set("vault_enabled", b)
-		}
-	}
-	if val, ok := os.LookupEnv("FIGCHAIN_VAULT_BUCKET"); ok && !v.IsSet("vault_bucket") {
-		v.Set("vault_bucket", val)
-	}
-	if val, ok := os.LookupEnv("FIGCHAIN_VAULT_PREFIX"); ok && !v.IsSet("vault_prefix") {
-		v.Set("vault_prefix", val)
-	}
-	if val, ok := os.LookupEnv("FIGCHAIN_VAULT_REGION"); ok && !v.IsSet("vault_region") {
-		v.Set("vault_region", val)
-	}
-	if val, ok := os.LookupEnv("FIGCHAIN_VAULT_ENDPOINT"); ok && !v.IsSet("vault_endpoint") {
-		v.Set("vault_endpoint", val)
-	}
-	if val, ok := os.LookupEnv("FIGCHAIN_VAULT_PATH_STYLE_ACCESS"); ok && !v.IsSet("vault_path_style") {
-		if b, err := strconv.ParseBool(val); err == nil {
-			v.Set("vault_path_style", b)
-		}
-	}
-	if val, ok := os.LookupEnv("FIGCHAIN_VAULT_PRIVATE_KEY_PATH"); ok && !v.IsSet("vault_private_key_path") {
-		v.Set("vault_private_key_path", val)
-	}
-	if val, ok := os.LookupEnv("FIGCHAIN_ENCRYPTION_PRIVATE_KEY_PATH"); ok && !v.IsSet("encryption_private_key_path") {
-		v.Set("encryption_private_key_path", val)
-	}
-	if val, ok := os.LookupEnv("FIGCHAIN_AUTH_PRIVATE_KEY_PATH"); ok && !v.IsSet("auth_private_key_path") {
-		v.Set("auth_private_key_path", val)
-	}
-	if val, ok := os.LookupEnv("FIGCHAIN_AUTH_CLIENT_ID"); ok && !v.IsSet("auth_client_id") {
-		v.Set("auth_client_id", val)
-	}
-	if val, ok := os.LookupEnv("FIGCHAIN_AUTH_CREDENTIAL_ID"); ok && !v.IsSet("auth_credential_id") {
-		v.Set("auth_credential_id", val)
-	}
-	if val, ok := os.LookupEnv("FIGCHAIN_TENANT_ID"); ok && !v.IsSet("tenant_id") {
-		v.Set("tenant_id", val)
+
+	if val, ok := os.LookupEnv("FIGCHAIN_NAMESPACES"); ok && !v.IsSet("namespaces") {
+		v.Set("namespaces", splitAndTrim(val))
 	}
 
 	// Defaults
@@ -194,14 +175,7 @@ func LoadConfig(path string) (*Config, error) {
 	if v.IsSet("namespaces") {
 		switch val := v.Get("namespaces").(type) {
 		case string:
-			parts := []string{}
-			for _, p := range strings.Split(val, ",") {
-				p = strings.TrimSpace(p)
-				if p != "" {
-					parts = append(parts, p)
-				}
-			}
-			v.Set("namespaces", parts)
+			v.Set("namespaces", splitAndTrim(val))
 		case []interface{}:
 			parts := []string{}
 			for _, it := range val {
@@ -429,4 +403,14 @@ func WithConfig(cfg *Config) Option {
 	return func(c *Config) {
 		*c = *cfg
 	}
+}
+func splitAndTrim(s string) []string {
+	parts := []string{}
+	for _, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	return parts
 }
