@@ -27,7 +27,7 @@ import (
 
 // AvroRecord is an interface that provides the Avro schema.
 type AvroRecord interface {
-	Schema() string
+	Schema() avro.Schema
 }
 
 // Client is the main entry point for the FigChain client.
@@ -301,10 +301,10 @@ func (c *Client) GetFig(key string, target any, ctx *evaluation.EvaluationContex
 	// Deserialize Avro
 	record, ok := target.(AvroRecord)
 	if !ok {
-		return fmt.Errorf("target must implement AvroRecord interface with Schema() string method")
+		return fmt.Errorf("target must implement AvroRecord interface with Schema() avro.Schema method")
 	}
 
-	schema, err := avro.Parse(record.Schema())
+	schema, err := avro.Parse(record.Schema().String())
 	if err != nil {
 		return fmt.Errorf("failed to parse schema from target: %w", err)
 	}
@@ -472,7 +472,7 @@ func (c *Client) RegisterListener(key string, prototype AvroRecord, callback fun
 		targetVal := reflect.New(t)
 		target := targetVal.Interface()
 
-		schema, err := avro.Parse(prototype.Schema())
+		schema, err := avro.Parse(prototype.Schema().String())
 		if err != nil {
 			log.Printf("Listener schema parse failed for %s: %v", key, err)
 			return

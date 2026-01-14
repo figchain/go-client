@@ -26,34 +26,12 @@ import (
 	"github.com/figchain/go-client/pkg/evaluation"
 )
 
-// Define your configuration struct
-type MyConfig struct {
-	FeatureEnabled bool `avro:"feature_enabled"`
-	MaxItems       int  `avro:"max_items"`
-}
-
-// Implement the AvroRecord interface
-func (c *MyConfig) Schema() string {
-	return `{
-		"type": "record",
-		"name": "MyConfig",
-		"fields": [
-			{"name": "feature_enabled", "type": "boolean"},
-			{"name": "max_items", "type": "int"}
-		]
-	}`
-}
-
 func main() {
+	configPath := "path/to/your/client-config.json" // The config that was downloaded in the UI
 	// Build the client
-	c, err := client.New(
-		config.WithBaseURL("https://api.figchain.io"),
-		config.WithClientSecret("your-api-key"),
-		config.WithEnvironmentID("your-environment-id"),
-		config.WithNamespaces("default"),
-	)
+	c, err := client.NewClientFromConfig(configPath)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to create FigChain client: %v", err)
 	}
 	defer c.Close()
 

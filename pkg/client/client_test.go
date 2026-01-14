@@ -23,12 +23,12 @@ type MockAvroRecord struct {
 	Value string `avro:"value"`
 }
 
-func (m *MockAvroRecord) Schema() string {
-	return `{
+func (m *MockAvroRecord) Schema() avro.Schema {
+	return avro.MustParse(`{
 		"type": "record",
 		"name": "MockAvroRecord",
 		"fields": [{"name": "value", "type": "string"}]
-	}`
+	}`)
 }
 
 func getRespSchema(name string) avro.Schema {
