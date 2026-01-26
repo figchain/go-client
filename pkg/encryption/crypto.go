@@ -3,14 +3,15 @@ package encryption
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/rand"
-	"crypto/rsa"
+	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 
-	"github.com/figchain/go-client/pkg/util"
+	"golang.org/x/crypto/curve25519"
+	"golang.org/x/crypto/hkdf"
 )
 
 var (
@@ -18,82 +19,79 @@ var (
 	ErrUnwrap     = errors.New("unwrap failed")
 )
 
-func LoadPrivateKey(path string) (*rsa.PrivateKey, error) {
-	return util.LoadRSAPrivateKey(path)
-}
-
-func DecryptRSAOAEP(cipherText []byte, privateKey *rsa.PrivateKey) ([]byte, error) {
-	hash := sha256.New()
-	return rsa.DecryptOAEP(hash, rand.Reader, privateKey, cipherText, nil)
-}
-
-func DecryptAESGCM(cipherText []byte, key []byte) ([]byte, error) {
-	if len(cipherText) < 12 {
-		return nil, fmt.Errorf("cipher text too short")
+// DecryptX25519 implements ECIES decryption consistent with the web client.
+// Format: EphemeralPubKey (32 bytes) || IV (12 bytes) || Ciphertext
+func DecryptX25519(packedBlob []byte, privateKeyBytes []byte) ([]byte, error) {
+	if len(packedBlob) < 32+12 {
+		return nil, fmt.Errorf("blob too short")
 	}
-	iv := cipherText[:12]
-	actualCipher := cipherText[12:]
+
+	ephemeralPubKey := packedBlob[:32]
+	iv := packedBlob[32:44]
+	ciphertext := packedBlob[44:]
+
+	// 1. Derive Shared Secret: X25519(myPriv, ephPub)
+	sharedSecret, err := curve25519.X25519(privateKeyBytes, ephemeralPubKey)
+	if err != nil {
+		return nil, fmt.Errorf("ECDH failed: %w", err)
+	}
+
+	// 2. Derive KEK: HKDF-SHA256(sharedSecret, salt="", info="")
+	kek := make([]byte, 32) // AES-256
+	hkdfReader := hkdf.New(sha256.New, sharedSecret, nil, nil)
+	if _, err := io.ReadFull(hkdfReader, kek); err != nil {
+		return nil, fmt.Errorf("HKDF failed: %w", err)
+	}
+
+	// 3. Decrypt: AES-GCM(kek, iv, ciphertext)
+	block, err := aes.NewCipher(kek)
+	if err != nil {
+		return nil, fmt.Errorf("AES creation failed: %w", err)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("GCM creation failed: %w", err)
+	}
+
+	plaintext, err := gcm.Open(nil, iv, ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("decryption failed: %w", err)
+	}
+
+	return plaintext, nil
+}
+
+// SignEd25519 signs a message using an Ed25519 private key.
+// The private key must be 64 bytes (seed + public).
+func SignEd25519(message []byte, privateKeyHex string) ([]byte, error) {
+	privBytes, err := hex.DecodeString(privateKeyHex)
+	if err != nil {
+		return nil, fmt.Errorf("invalid private key hex: %w", err)
+	}
+	if len(privBytes) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("invalid private key length: got %d, want %d", len(privBytes), ed25519.PrivateKeySize)
+	}
+
+	return ed25519.Sign(ed25519.PrivateKey(privBytes), message), nil
+}
+
+// DecryptAESGCM decrypts data using AES-GCM.
+// Format: IV (12 bytes) || Ciphertext
+func DecryptAESGCM(packedData []byte, key []byte) ([]byte, error) {
+	if len(packedData) < 12 {
+		return nil, fmt.Errorf("data too short")
+	}
+	iv := packedData[:12]
+	ciphertext := packedData[12:]
+
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
-	aesgcm, err := cipher.NewGCMWithNonceSize(block, 12)
+	gcm, err := cipher.NewGCM(block)
 	if err != nil {
 		return nil, err
 	}
-	return aesgcm.Open(nil, iv, actualCipher, nil)
-}
-
-// UnwrapAESKey implements RFC 3394 AES Key Unwrap.
-func UnwrapAESKey(wrappedKey, kek []byte) ([]byte, error) {
-	if len(wrappedKey)%8 != 0 {
-		return nil, errors.New("invalid wrapped key length")
-	}
-	n := len(wrappedKey)/8 - 1
-	if n < 1 {
-		return nil, errors.New("wrapped key too short")
-	}
-
-	block, err := aes.NewCipher(kek)
-	if err != nil {
-		return nil, err
-	}
-
-	a := make([]byte, 8)
-	copy(a, wrappedKey[:8])
-
-	r := make([]byte, len(wrappedKey)-8)
-	copy(r, wrappedKey[8:])
-
-	for j := 5; j >= 0; j-- {
-		for i := n; i >= 1; i-- {
-			t := uint64(n*j + i)
-
-			// A = A ^ t
-			val := binary.BigEndian.Uint64(a)
-			binary.BigEndian.PutUint64(a, val^t)
-
-			// B = AES_DEC(K, A | R[i])
-			offset := (i - 1) * 8
-
-			input := make([]byte, 16)
-			copy(input[:8], a)
-			copy(input[8:], r[offset:offset+8])
-
-			output := make([]byte, 16)
-			block.Decrypt(output, input)
-
-			// A = MSB(64, B)
-			copy(a, output[:8])
-			// R[i] = LSB(64, B)
-			copy(r[offset:offset+8], output[8:])
-		}
-	}
-
-	// Check IV (0xA6A6A6A6A6A6A6A6)
-	if binary.BigEndian.Uint64(a) != 0xA6A6A6A6A6A6A6A6 {
-		return nil, fmt.Errorf("%w: integrity check failed", ErrUnwrap)
-	}
-
-	return r, nil
+	return gcm.Open(nil, iv, ciphertext, nil)
 }

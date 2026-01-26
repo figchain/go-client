@@ -14,10 +14,10 @@ import (
 type BootstrapStrategy string
 
 const (
-	BootstrapStrategyServer      BootstrapStrategy = "server"
-	BootstrapStrategyServerFirst BootstrapStrategy = "server-first"
-	BootstrapStrategyVault       BootstrapStrategy = "vault"
-	BootstrapStrategyHybrid      BootstrapStrategy = "hybrid"
+	BootstrapStrategyServer       BootstrapStrategy = "server"
+	BootstrapStrategyServerFirst  BootstrapStrategy = "server-first"
+	BootstrapStrategyS3BackupOnly BootstrapStrategy = "s3-backup-only"
+	BootstrapStrategyHybrid       BootstrapStrategy = "hybrid"
 )
 
 // Config holds the client configuration.
@@ -36,19 +36,17 @@ type Config struct {
 	UseLongPolling    bool              `mapstructure:"use_long_polling"`
 	BootstrapStrategy BootstrapStrategy `mapstructure:"bootstrap_strategy"`
 
-	// Vault Configuration
-	VaultBucket              string `mapstructure:"vault_bucket"`
-	VaultPrefix              string `mapstructure:"vault_prefix"`
-	VaultRegion              string `mapstructure:"vault_region"`
-	VaultEndpoint            string `mapstructure:"vault_endpoint"`
-	VaultPathStyle           bool   `mapstructure:"vault_path_style"`
-	VaultPrivateKeyPath      string `mapstructure:"vault_private_key_path"`
-	VaultEnabled             bool   `mapstructure:"vault_enabled"`
-	EncryptionPrivateKeyPath string `mapstructure:"encryption_private_key_path"`
-	AuthPrivateKeyPath       string `mapstructure:"auth_private_key_path"`
-	AuthPrivateKeyPEM        string `mapstructure:"auth_private_key_pem"`
-	AuthClientID             string `mapstructure:"auth_client_id"`
-	AuthCredentialID         string `mapstructure:"auth_credential_id"`
+	// S3 Backup Configuration
+	S3BackupBucket          string `mapstructure:"s3_backup_bucket"`
+	S3BackupPrefix          string `mapstructure:"s3_backup_prefix"`
+	S3BackupRegion          string `mapstructure:"s3_backup_region"`
+	S3BackupEndpoint        string `mapstructure:"s3_backup_endpoint"`
+	S3BackupPathStyleAccess bool   `mapstructure:"s3_backup_path_style_access"`
+	S3BackupEnabled         bool   `mapstructure:"s3_backup_enabled"`
+	EncryptionPrivateKey    string `mapstructure:"encryption_private_key"` // Hex-encoded X25519
+	AuthPrivateKey          string `mapstructure:"auth_private_key"`       // Hex-encoded Ed25519
+	AuthClientID            string `mapstructure:"auth_client_id"`
+	AuthCredentialID        string `mapstructure:"auth_credential_id"`
 }
 
 // LoadConfig loads configuration from a YAML file and environment variables.
@@ -74,35 +72,34 @@ func LoadConfig(path string) (*Config, error) {
 
 	// Helper maps for environment variable loading
 	stringMap := map[string]string{
-		"FIGCHAIN_URL":                         "base_url",
-		"FIGCHAIN_LONG_POLLING_URL":            "long_polling_url",
-		"FIGCHAIN_CLIENT_SECRET":               "client_secret",
-		"FIGCHAIN_ENVIRONMENT_ID":              "environment_id",
-		"FIGCHAIN_AS_OF_TIMESTAMP":             "as_of_timestamp",
-		"FIGCHAIN_BOOTSTRAP_STRATEGY":          "bootstrap_strategy",
-		"FIGCHAIN_VAULT_BUCKET":                "vault_bucket",
-		"FIGCHAIN_VAULT_PREFIX":                "vault_prefix",
-		"FIGCHAIN_VAULT_REGION":                "vault_region",
-		"FIGCHAIN_VAULT_ENDPOINT":              "vault_endpoint",
-		"FIGCHAIN_VAULT_PRIVATE_KEY_PATH":      "vault_private_key_path",
-		"FIGCHAIN_ENCRYPTION_PRIVATE_KEY_PATH": "encryption_private_key_path",
-		"FIGCHAIN_AUTH_PRIVATE_KEY_PATH":       "auth_private_key_path",
-		"FIGCHAIN_AUTH_CLIENT_ID":              "auth_client_id",
-		"FIGCHAIN_AUTH_CREDENTIAL_ID":          "auth_credential_id",
-		"FIGCHAIN_TENANT_ID":                   "tenant_id",
+		"FIGCHAIN_URL":                    "base_url",
+		"FIGCHAIN_LONG_POLLING_URL":       "long_polling_url",
+		"FIGCHAIN_CLIENT_SECRET":          "client_secret",
+		"FIGCHAIN_ENVIRONMENT_ID":         "environment_id",
+		"FIGCHAIN_AS_OF_TIMESTAMP":        "as_of_timestamp",
+		"FIGCHAIN_BOOTSTRAP_STRATEGY":     "bootstrap_strategy",
+		"FIGCHAIN_S3_BACKUP_BUCKET":       "s3_backup_bucket",
+		"FIGCHAIN_S3_BACKUP_PREFIX":       "s3_backup_prefix",
+		"FIGCHAIN_S3_BACKUP_REGION":       "s3_backup_region",
+		"FIGCHAIN_S3_BACKUP_ENDPOINT":     "s3_backup_endpoint",
+		"FIGCHAIN_ENCRYPTION_PRIVATE_KEY": "encryption_private_key",
+		"FIGCHAIN_AUTH_CLIENT_ID":         "auth_client_id",
+		"FIGCHAIN_AUTH_CREDENTIAL_ID":     "auth_credential_id",
+		"FIGCHAIN_IDENTITY_PRIVATE_KEY":   "auth_private_key",
+		"FIGCHAIN_TENANT_ID":              "tenant_id",
 	}
 	for env, key := range stringMap {
-		if val, ok := os.LookupEnv(env); ok && !v.IsSet(key) {
+		if val, ok := os.LookupEnv(env); ok {
 			v.Set(key, val)
 		}
 	}
 
 	boolMap := map[string]string{
-		"FIGCHAIN_VAULT_ENABLED":           "vault_enabled",
-		"FIGCHAIN_VAULT_PATH_STYLE_ACCESS": "vault_path_style",
+		"FIGCHAIN_S3_BACKUP_ENABLED":           "s3_backup_enabled",
+		"FIGCHAIN_S3_BACKUP_PATH_STYLE_ACCESS": "s3_backup_path_style_access",
 	}
 	for env, key := range boolMap {
-		if val, ok := os.LookupEnv(env); ok && !v.IsSet(key) {
+		if val, ok := os.LookupEnv(env); ok {
 			if b, err := strconv.ParseBool(val); err == nil {
 				v.Set(key, b)
 			}
@@ -113,7 +110,7 @@ func LoadConfig(path string) (*Config, error) {
 		"FIGCHAIN_MAX_RETRIES": "max_retries",
 	}
 	for env, key := range intMap {
-		if val, ok := os.LookupEnv(env); ok && !v.IsSet(key) {
+		if val, ok := os.LookupEnv(env); ok {
 			if i, err := strconv.Atoi(val); err == nil {
 				v.Set(key, i)
 			}
@@ -125,15 +122,19 @@ func LoadConfig(path string) (*Config, error) {
 		"FIGCHAIN_RETRY_DELAY_MS":      "retry_delay",
 	}
 	for env, key := range durationMap {
-		if val, ok := os.LookupEnv(env); ok && !v.IsSet(key) {
+		if val, ok := os.LookupEnv(env); ok {
 			if ms, err := strconv.Atoi(val); err == nil {
 				v.Set(key, time.Duration(ms)*time.Millisecond)
 			}
 		}
 	}
 
+	// Plural takes precedence
 	if val, ok := os.LookupEnv("FIGCHAIN_NAMESPACES"); ok && !v.IsSet("namespaces") {
 		v.Set("namespaces", splitAndTrim(val))
+	} else if val, ok := os.LookupEnv("FIGCHAIN_NAMESPACE"); ok && !v.IsSet("namespaces") {
+		// Singular fallback
+		v.Set("namespaces", []string{strings.TrimSpace(val)})
 	}
 
 	// Defaults
@@ -142,7 +143,7 @@ func LoadConfig(path string) (*Config, error) {
 	v.SetDefault("max_retries", 3)
 	v.SetDefault("retry_delay", "1s")
 	v.SetDefault("use_long_polling", true)
-	v.SetDefault("vault_enabled", false)
+	v.SetDefault("s3_backup_enabled", false)
 	v.SetDefault("bootstrap_strategy", string(BootstrapStrategyServer))
 
 	if err := v.ReadInConfig(); err != nil {
@@ -158,7 +159,7 @@ func LoadConfig(path string) (*Config, error) {
 		"environmentId": "environment_id",
 		"tenantId":      "tenant_id",
 		"credentialId":  "auth_credential_id",
-		"privateKey":    "auth_private_key_pem",
+		"privateKey":    "auth_private_key",
 	}
 	for camelKey, snakeKey := range jsonKeyAliases {
 		if v.IsSet(camelKey) && !v.IsSet(snakeKey) {
@@ -166,28 +167,42 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 
-	// Handle legacy "namespace" field (single string)
-	if v.IsSet("namespace") && !v.IsSet("namespaces") {
-		v.Set("namespaces", []string{v.GetString("namespace")})
+	// Handle legacy "namespace" field (single string) and "namespaces" (list)
+	// Merge them if both exist
+	uniqueNamespaces := make(map[string]struct{})
+
+	if v.IsSet("namespace") {
+		ns := v.GetString("namespace")
+		if strings.TrimSpace(ns) != "" {
+			uniqueNamespaces[ns] = struct{}{}
+		}
 	}
 
-	// Normalize namespaces types: support string, []interface{} and []string
 	if v.IsSet("namespaces") {
 		switch val := v.Get("namespaces").(type) {
 		case string:
-			v.Set("namespaces", splitAndTrim(val))
+			for _, s := range splitAndTrim(val) {
+				uniqueNamespaces[s] = struct{}{}
+			}
 		case []interface{}:
-			parts := []string{}
 			for _, it := range val {
 				if s, ok := it.(string); ok {
 					s = strings.TrimSpace(s)
 					if s != "" {
-						parts = append(parts, s)
+						uniqueNamespaces[s] = struct{}{}
 					}
 				}
 			}
-			v.Set("namespaces", parts)
 		}
+	}
+
+	// Flatten unique map to slice
+	finalNamespaces := make([]string, 0, len(uniqueNamespaces))
+	for ns := range uniqueNamespaces {
+		finalNamespaces = append(finalNamespaces, ns)
+	}
+	if len(finalNamespaces) > 0 {
+		v.Set("namespaces", finalNamespaces)
 	}
 
 	// Ensure auth client id is string if set
@@ -300,66 +315,45 @@ func WithBootstrapStrategy(strategy BootstrapStrategy) Option {
 	}
 }
 
-// WithVaultBucket sets the S3 bucket for the Vault.
-func WithVaultBucket(bucket string) Option {
+// WithS3BackupBucket sets the S3 bucket for the S3 Backup.
+func WithS3BackupBucket(bucket string) Option {
 	return func(c *Config) {
-		c.VaultBucket = bucket
+		c.S3BackupBucket = bucket
 	}
 }
 
-// WithVaultPrefix sets the object prefix for the Vault.
-func WithVaultPrefix(prefix string) Option {
+// WithS3BackupPrefix sets the object prefix for the S3 Backup.
+func WithS3BackupPrefix(prefix string) Option {
 	return func(c *Config) {
-		c.VaultPrefix = prefix
+		c.S3BackupPrefix = prefix
 	}
 }
 
-// WithVaultRegion sets the AWS region for the Vault.
-func WithVaultRegion(region string) Option {
+// WithS3BackupRegion sets the AWS region for the S3 Backup.
+func WithS3BackupRegion(region string) Option {
 	return func(c *Config) {
-		c.VaultRegion = region
+		c.S3BackupRegion = region
 	}
 }
 
-// WithVaultEndpoint sets the custom endpoint for the Vault (e.g. for MinIO).
-func WithVaultEndpoint(endpoint string) Option {
+// WithS3BackupEndpoint sets the custom endpoint for the S3 Backup (e.g. for MinIO).
+func WithS3BackupEndpoint(endpoint string) Option {
 	return func(c *Config) {
-		c.VaultEndpoint = endpoint
+		c.S3BackupEndpoint = endpoint
 	}
 }
 
-// WithVaultPathStyle sets whether to use path-style access for the Vault.
-func WithVaultPathStyle(enabled bool) Option {
+// WithS3BackupPathStyle sets whether to use path-style access for the S3 Backup.
+func WithS3BackupPathStyle(enabled bool) Option {
 	return func(c *Config) {
-		c.VaultPathStyle = enabled
+		c.S3BackupPathStyleAccess = enabled
 	}
 }
 
-// WithVaultPrivateKeyPath sets the path to the private key for the Vault.
-func WithVaultPrivateKeyPath(path string) Option {
+// WithS3BackupEnabled sets whether the S3 Backup is enabled.
+func WithS3BackupEnabled(enabled bool) Option {
 	return func(c *Config) {
-		c.VaultPrivateKeyPath = path
-	}
-}
-
-// WithVaultEnabled sets whether the Vault is enabled.
-func WithVaultEnabled(enabled bool) Option {
-	return func(c *Config) {
-		c.VaultEnabled = enabled
-	}
-}
-
-// WithEncryptionPrivateKeyPath sets the path to the encryption private key.
-func WithEncryptionPrivateKeyPath(path string) Option {
-	return func(c *Config) {
-		c.EncryptionPrivateKeyPath = path
-	}
-}
-
-// WithAuthPrivateKeyPath sets the path to the authentication private key.
-func WithAuthPrivateKeyPath(path string) Option {
-	return func(c *Config) {
-		c.AuthPrivateKeyPath = path
+		c.S3BackupEnabled = enabled
 	}
 }
 
@@ -370,10 +364,10 @@ func WithAuthClientID(id string) Option {
 	}
 }
 
-// WithAuthPrivateKeyPEM sets the auth private key PEM content.
-func WithAuthPrivateKeyPEM(pem string) Option {
+// WithAuthPrivateKey sets the auth private key hex content.
+func WithAuthPrivateKey(hex string) Option {
 	return func(c *Config) {
-		c.AuthPrivateKeyPEM = pem
+		c.AuthPrivateKey = hex
 	}
 }
 
@@ -393,7 +387,7 @@ func DefaultConfig() *Config {
 		RetryDelay:        1 * time.Second,
 		HTTPClient:        http.DefaultClient,
 		UseLongPolling:    true,
-		VaultEnabled:      false,
+		S3BackupEnabled:   false,
 		BootstrapStrategy: BootstrapStrategyServer,
 	}
 }

@@ -18,6 +18,7 @@ import (
 type Transport interface {
 	FetchInitial(ctx context.Context, req *model.InitialFetchRequest) (*model.InitialFetchResponse, error)
 	FetchUpdate(ctx context.Context, req *model.UpdateFetchRequest) (*model.UpdateFetchResponse, error)
+	FetchSchema(ctx context.Context, namespace, name string, version int) (string, error)
 	GetNamespaceKey(ctx context.Context, namespace string) ([]*model.NamespaceKey, error)
 	UploadPublicKey(ctx context.Context, key *model.UserPublicKey) error
 	Close() error
@@ -132,6 +133,42 @@ func (t *HTTPTransport) FetchUpdate(ctx context.Context, req *model.UpdateFetchR
 	return &resp, nil
 }
 
+func (t *HTTPTransport) FetchSchema(ctx context.Context, namespace, name string, version int) (string, error) {
+	endpoint := fmt.Sprintf("%s/schemas/%s/%s/%d/content", t.baseURL, url.PathEscape(namespace), url.PathEscape(name), version)
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("invalid url: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	token, err := t.tokenProvider.GetToken()
+	if err != nil {
+		return "", fmt.Errorf("failed to get auth token: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("server returned error %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	return string(bodyBytes), nil
+}
+
 func (t *HTTPTransport) GetNamespaceKey(ctx context.Context, namespace string) ([]*model.NamespaceKey, error) {
 	endpoint := fmt.Sprintf("%s/envelopes?namespace=%s", t.baseURL, url.QueryEscape(namespace))
 	u, err := url.Parse(endpoint)
@@ -157,6 +194,7 @@ func (t *HTTPTransport) GetNamespaceKey(ctx context.Context, namespace string) (
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("server returned error %d: %s", resp.StatusCode, string(bodyBytes))
 	}

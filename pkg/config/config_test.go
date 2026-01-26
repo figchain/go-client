@@ -19,7 +19,7 @@ func TestEnvCompatibilityAliases(t *testing.T) {
 		"FIGCHAIN_POLLING_INTERVAL_MS",
 		"FIGCHAIN_RETRY_DELAY_MS",
 		"FIGCHAIN_NAMESPACES",
-		"FIGCHAIN_VAULT_PATH_STYLE_ACCESS",
+		"FIGCHAIN_S3_BACKUP_PATH_STYLE_ACCESS",
 		"FIGCHAIN_AUTH_CLIENT_ID",
 	}
 	defer unsetEnv(keys)
@@ -28,7 +28,7 @@ func TestEnvCompatibilityAliases(t *testing.T) {
 	_ = os.Setenv("FIGCHAIN_POLLING_INTERVAL_MS", "45000")
 	_ = os.Setenv("FIGCHAIN_RETRY_DELAY_MS", "250")
 	_ = os.Setenv("FIGCHAIN_NAMESPACES", "ns1, ns2")
-	_ = os.Setenv("FIGCHAIN_VAULT_PATH_STYLE_ACCESS", "true")
+	_ = os.Setenv("FIGCHAIN_S3_BACKUP_PATH_STYLE_ACCESS", "true")
 	_ = os.Setenv("FIGCHAIN_AUTH_CLIENT_ID", "client-123")
 
 	cfg, err := LoadConfig("")
@@ -53,8 +53,8 @@ func TestEnvCompatibilityAliases(t *testing.T) {
 		t.Errorf("expected Namespaces %v, got %v", expectedNS, cfg.Namespaces)
 	}
 
-	if cfg.VaultPathStyle != true {
-		t.Errorf("expected VaultPathStyle true, got %v", cfg.VaultPathStyle)
+	if cfg.S3BackupPathStyleAccess != true {
+		t.Errorf("expected S3BackupPathStyleAccess true, got %v", cfg.S3BackupPathStyleAccess)
 	}
 
 	if cfg.AuthClientID != "client-123" {

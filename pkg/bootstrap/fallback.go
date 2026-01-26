@@ -6,21 +6,21 @@ import (
 	"log"
 )
 
-// FallbackStrategy implements bootstrapping from Server then Vault if Server fails.
+// FallbackStrategy implements bootstrapping from Server then S3 Backup if Server fails.
 type FallbackStrategy struct {
-	serverStrategy Strategy
-	vaultStrategy  Strategy
+	serverStrategy   Strategy
+	s3BackupStrategy Strategy
 }
 
 // NewFallbackStrategy creates a new FallbackStrategy.
-func NewFallbackStrategy(server Strategy, vault Strategy) *FallbackStrategy {
+func NewFallbackStrategy(server Strategy, s3Backup Strategy) *FallbackStrategy {
 	return &FallbackStrategy{
-		serverStrategy: server,
-		vaultStrategy:  vault,
+		serverStrategy:   server,
+		s3BackupStrategy: s3Backup,
 	}
 }
 
-// Bootstrap attempts to load from Server, falling back to Vault on failure.
+// Bootstrap attempts to load from Server, falling back to S3 Backup on failure.
 func (s *FallbackStrategy) Bootstrap(ctx context.Context, namespaces []string) (*Result, error) {
 	// 1. Try Server
 	result, serverErr := s.serverStrategy.Bootstrap(ctx, namespaces)
@@ -28,19 +28,15 @@ func (s *FallbackStrategy) Bootstrap(ctx context.Context, namespaces []string) (
 		return result, nil
 	}
 
-	log.Printf("WARN Server bootstrap failed: %v. Falling back to Vault.", serverErr)
+	log.Printf("WARN Server bootstrap failed: %v. Falling back to S3 Backup.", serverErr)
 
-	// 2. Try Vault
-	result, vaultErr := s.vaultStrategy.Bootstrap(ctx, namespaces)
-	if vaultErr != nil {
-		return nil, fmt.Errorf("ERROR server bootstrap failed: %v; fallback to vault also failed: %w", serverErr, vaultErr)
+	// 2. Try S3 Backup
+	result, s3BackupErr := s.s3BackupStrategy.Bootstrap(ctx, namespaces)
+	if s3BackupErr != nil {
+		return nil, fmt.Errorf("ERROR server bootstrap failed: %v; fallback to s3 backup also failed: %w", serverErr, s3BackupErr)
 	}
 
 	return result, nil
-}
-
-func (s *FallbackStrategy) String() string {
-	return "FallbackStrategy"
 }
 
 var _ Strategy = (*FallbackStrategy)(nil)

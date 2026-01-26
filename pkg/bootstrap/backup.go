@@ -4,22 +4,22 @@ import (
 	"context"
 
 	"github.com/figchain/go-client/pkg/model"
-	"github.com/figchain/go-client/pkg/vault"
+	"github.com/figchain/go-client/pkg/backup"
 )
 
-// VaultStrategy implements bootstrapping from the FigChain Vault (S3).
-type VaultStrategy struct {
-	vaultService *vault.VaultService
+// S3BackupStrategy implements bootstrapping from the FigChain S3Backup (S3).
+type S3BackupStrategy struct {
+	backupService *backup.S3BackupService
 }
 
-// NewVaultStrategy creates a new VaultStrategy.
-func NewVaultStrategy(vs *vault.VaultService) *VaultStrategy {
-	return &VaultStrategy{vaultService: vs}
+// NewS3BackupStrategy creates a new S3BackupStrategy.
+func NewS3BackupStrategy(vs *backup.S3BackupService) *S3BackupStrategy {
+	return &S3BackupStrategy{backupService: vs}
 }
 
-// Bootstrap loads data from the Vault.
-func (s *VaultStrategy) Bootstrap(ctx context.Context, namespaces []string) (*Result, error) {
-	payload, err := s.vaultService.LoadBackup(ctx)
+// Bootstrap loads data from the S3Backup.
+func (s *S3BackupStrategy) Bootstrap(ctx context.Context, namespaces []string) (*Result, error) {
+	payload, err := s.backupService.LoadBackup(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -57,8 +57,8 @@ func (s *VaultStrategy) Bootstrap(ctx context.Context, namespaces []string) (*Re
 	}, nil
 }
 
-func (s *VaultStrategy) String() string {
-	return "VaultStrategy"
+func (s *S3BackupStrategy) String() string {
+	return "S3BackupStrategy"
 }
 
-var _ Strategy = (*VaultStrategy)(nil)
+var _ Strategy = (*S3BackupStrategy)(nil)
