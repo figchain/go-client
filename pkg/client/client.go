@@ -61,12 +61,13 @@ func NewClientFromConfig(path string, opts ...config.Option) (*Client, error) {
 	// 2. Read JSON
 	// We define a struct matching client-config.json
 	type ClientConfig struct {
-		Namespace     string   `json:"namespace"`
-		Namespaces    []string `json:"namespaces"`
-		CredentialID  string   `json:"credentialId"`
-		PrivateKey    string   `json:"privateKey"`
-		EnvironmentID string   `json:"environmentId"`
-		TenantID      string   `json:"tenantId"`
+		Namespace            string   `json:"namespace"`
+		Namespaces           []string `json:"namespaces"`
+		CredentialID         string   `json:"credentialId"`
+		AuthPrivateKey       string   `json:"authPrivateKey"`
+		EncryptionPrivateKey string   `json:"encryptionPrivateKey"`
+		EnvironmentID        string   `json:"environmentId"`
+		TenantID             string   `json:"tenantId"`
 		// Backup configuration is handled separately or via Env
 		S3BackupEnabled         *bool  `json:"s3BackupEnabled"`
 		S3BackupBucket          string `json:"s3BackupBucket"`
@@ -113,8 +114,12 @@ func NewClientFromConfig(path string, opts ...config.Option) (*Client, error) {
 		cfg.AuthCredentialID = cc.CredentialID
 	}
 
-	if cfg.AuthPrivateKey == "" && cc.PrivateKey != "" {
-		cfg.AuthPrivateKey = cc.PrivateKey
+	if cfg.AuthPrivateKey == "" && cc.AuthPrivateKey != "" {
+		cfg.AuthPrivateKey = cc.AuthPrivateKey
+	}
+
+	if cfg.EncryptionPrivateKey == "" && cc.EncryptionPrivateKey != "" {
+		cfg.EncryptionPrivateKey = cc.EncryptionPrivateKey
 	}
 
 	if cc.S3BackupEnabled != nil {
