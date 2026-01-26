@@ -209,18 +209,8 @@ func New(opts ...config.Option) (*Client, error) {
 	tr := transport.NewHTTPTransport(cfg.HTTPClient, cfg.BaseURL, tokenProvider, cfg.EnvironmentID)
 
 	var encService *encryption.Service
-	// Check for EncryptionPrivateKey (Hex)
+	// Encryption requires a dedicated private key - no fallback to auth key
 	encKeyHex := cfg.EncryptionPrivateKey
-	if encKeyHex == "" {
-		// Fallback: Reuse Auth Key if it's a valid hex seed (64 chars = 32 bytes)
-		if len(authKeyHex) == 64 {
-			encKeyHex = authKeyHex
-		} else if len(authKeyHex) == 128 {
-			// If full private key (seed + pub), take the seed (first 32 bytes)
-			encKeyHex = authKeyHex[:64]
-		}
-	}
-
 	if encKeyHex != "" {
 		svc, err := encryption.NewService(tr, encKeyHex)
 		if err != nil {
@@ -561,8 +551,14 @@ func (c *Client) fetchSchemaByURI(schemaURI string) (string, error) {
 	}
 
 	// parts[0] is "figchain.io,2025"
-	namespace, _ := url.QueryUnescape(parts[1])
-	schemaName, _ := url.QueryUnescape(parts[2])
+	namespace, err := url.PathUnescape(parts[1])
+	if err != nil {
+		return "", fmt.Errorf("invalid namespace in schema URI: %w", err)
+	}
+	schemaName, err := url.PathUnescape(parts[2])
+	if err != nil {
+		return "", fmt.Errorf("invalid schema name in schema URI: %w", err)
+	}
 	version, err := strconv.Atoi(parts[3])
 	if err != nil {
 		return "", fmt.Errorf("invalid schema version in URI: %s", parts[3])
