@@ -1,4 +1,4 @@
-package vault
+package backup
 
 import (
 	"context"
@@ -10,50 +10,50 @@ import (
 	"github.com/figchain/go-client/pkg/model"
 )
 
-type VaultBackup struct {
+type BackupFile struct {
 	Version        string `json:"version"`
 	KeyFingerprint string `json:"keyFingerprint"`
 	EncryptedKey   string `json:"encryptedKey"`
 	EncryptedData  string `json:"encryptedData"`
 }
 
-type VaultPayload struct {
+type BackupPayload struct {
 	TenantID    string            `json:"tenantId"`
 	GeneratedAt string            `json:"generatedAt"`
 	SyncToken   string            `json:"syncToken"`
 	Items       []model.FigFamily `json:"items"`
 }
 
-type VaultService struct {
+type S3BackupService struct {
 	cfg     *fc_config.Config
-	fetcher VaultFetcher
+	fetcher BackupFetcher
 }
 
-func NewVaultService(cfg *fc_config.Config, fetcher VaultFetcher) *VaultService {
-	return &VaultService{cfg: cfg, fetcher: fetcher}
+func NewS3BackupService(cfg *fc_config.Config, fetcher BackupFetcher) *S3BackupService {
+	return &S3BackupService{cfg: cfg, fetcher: fetcher}
 }
 
-func NewDefaultVaultService(ctx context.Context, cfg *fc_config.Config) (*VaultService, error) {
-	fetcher, err := NewS3VaultFetcher(ctx, cfg)
+func NewDefaultS3BackupService(ctx context.Context, cfg *fc_config.Config) (*S3BackupService, error) {
+	fetcher, err := NewS3BackupFetcher(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
-	return NewVaultService(cfg, fetcher), nil
+	return NewS3BackupService(cfg, fetcher), nil
 }
 
-func (s *VaultService) LoadBackup(ctx context.Context) (*VaultPayload, error) {
-	if !s.cfg.VaultEnabled {
-		return nil, fmt.Errorf("vault is not enabled")
-	}
-
-	if s.cfg.VaultPrivateKeyPath == "" {
-		return nil, fmt.Errorf("vault private key path is not configured")
+func (s *S3BackupService) LoadBackup(ctx context.Context) (*BackupPayload, error) {
+	if !s.cfg.S3BackupEnabled {
+		return nil, fmt.Errorf("s3 backup is not enabled")
 	}
 
 	// 1. Load Private Key
-	privateKey, err := LoadPrivateKey(s.cfg.VaultPrivateKeyPath)
+	privateKey, err := LoadPrivateKey(s.cfg.AuthPrivateKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load private key: %w", err)
+		// Fallback to encryption key if auth key not sufficient
+		privateKey, err = LoadPrivateKey(s.cfg.EncryptionPrivateKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load private key: %w", err)
+		}
 	}
 
 	// 2. Calculate Fingerprint
@@ -74,7 +74,7 @@ func (s *VaultService) LoadBackup(ctx context.Context) (*VaultPayload, error) {
 		return nil, fmt.Errorf("failed to read backup: %w", err)
 	}
 
-	var backup VaultBackup
+	var backup BackupFile
 	if err := json.Unmarshal(backupBytes, &backup); err != nil {
 		return nil, fmt.Errorf("failed to parse backup file: %w", err)
 	}
@@ -92,7 +92,7 @@ func (s *VaultService) LoadBackup(ctx context.Context) (*VaultPayload, error) {
 	}
 
 	// 6. Parse Payload
-	var payload VaultPayload
+	var payload BackupPayload
 	if err := json.Unmarshal([]byte(jsonPayload), &payload); err != nil {
 		return nil, fmt.Errorf("failed to parse payload: %w", err)
 	}

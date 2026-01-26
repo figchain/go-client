@@ -69,8 +69,4 @@ func (s *ServerStrategy) Bootstrap(ctx context.Context, namespaces []string) (*R
 	}, nil
 }
 
-func (s *ServerStrategy) String() string {
-	return "ServerStrategy"
-}
-
 var _ Strategy = (*ServerStrategy)(nil)

@@ -15,6 +15,5 @@ type Result struct {
 
 // Strategy defines the interface for bootstrapping the client.
 type Strategy interface {
-	String() string
 	Bootstrap(ctx context.Context, namespaces []string) (*Result, error)
 }

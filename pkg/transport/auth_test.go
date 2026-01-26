@@ -1,8 +1,9 @@
 package transport
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/rsa"
+	"encoding/hex"
 	"testing"
 	"time"
 
@@ -24,16 +25,20 @@ func TestSharedSecretTokenProvider_GetToken(t *testing.T) {
 }
 
 func TestPrivateKeyTokenProvider_GetToken(t *testing.T) {
-	pk, err := rsa.GenerateKey(rand.Reader, 2048)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("Failed to generate RSA key: %v", err)
+		t.Fatalf("Failed to generate Ed25519 key: %v", err)
 	}
+	privHex := hex.EncodeToString(priv)
 
 	serviceAccountID := "sa-123"
 	tenantID := "tenant-456"
 	namespace := "ns-1"
 	keyID := "key-456"
-	provider := NewPrivateKeyTokenProvider(pk, serviceAccountID, tenantID, namespace, keyID)
+	provider, err := NewPrivateKeyTokenProvider(privHex, serviceAccountID, tenantID, namespace, keyID)
+	if err != nil {
+		t.Fatalf("Failed to create provider: %v", err)
+	}
 
 	tokenString, err := provider.GetToken()
 	if err != nil {
@@ -42,10 +47,10 @@ func TestPrivateKeyTokenProvider_GetToken(t *testing.T) {
 
 	// Verify token
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+		if _, ok := token.Method.(*jwt.SigningMethodEd25519); !ok {
 			return nil, jwt.ErrSignatureInvalid
 		}
-		return &pk.PublicKey, nil
+		return pub, nil
 	})
 
 	if err != nil {

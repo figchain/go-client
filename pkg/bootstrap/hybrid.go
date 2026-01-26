@@ -10,41 +10,41 @@ import (
 	"github.com/figchain/go-client/pkg/transport"
 )
 
-// HybridStrategy implements bootstrapping from Vault then Server.
+// HybridStrategy implements bootstrapping from S3Backup then Server.
 type HybridStrategy struct {
-	vaultStrategy  Strategy
+	backupStrategy  Strategy
 	serverStrategy Strategy
 	transport      transport.Transport
 	environmentID  string
 }
 
 // NewHybridStrategy creates a new HybridStrategy.
-func NewHybridStrategy(vault Strategy, server Strategy, tr transport.Transport, environmentID string) *HybridStrategy {
+func NewHybridStrategy(backup Strategy, server Strategy, tr transport.Transport, environmentID string) *HybridStrategy {
 	return &HybridStrategy{
-		vaultStrategy:  vault,
+		backupStrategy:  backup,
 		serverStrategy: server,
 		transport:      tr,
 		environmentID:  environmentID,
 	}
 }
 
-// Bootstrap loads from Vault, identifies missing namespaces, fetches them from Server, and catches up.
+// Bootstrap loads from S3Backup, identifies missing namespaces, fetches them from Server, and catches up.
 func (s *HybridStrategy) Bootstrap(ctx context.Context, namespaces []string) (*Result, error) {
-	// 1. Load from Vault
-	vaultResult, err := s.vaultStrategy.Bootstrap(ctx, namespaces)
+	// 1. Load from S3Backup
+	backupResult, err := s.backupStrategy.Bootstrap(ctx, namespaces)
 	if err != nil {
-		log.Printf("WARN Vault bootstrap failed: %v. Falling back to full server fetch.", err)
-		vaultResult = &Result{}
+		log.Printf("WARN S3Backup bootstrap failed: %v. Falling back to full server fetch.", err)
+		backupResult = &Result{}
 	}
 
 	var allFamilies []model.FigFamily
-	if vaultResult.FigFamilies != nil {
-		allFamilies = append(allFamilies, vaultResult.FigFamilies...)
+	if backupResult.FigFamilies != nil {
+		allFamilies = append(allFamilies, backupResult.FigFamilies...)
 	}
 
 	finalCursors := make(map[string]string)
-	if vaultResult.Cursors != nil {
-		maps.Copy(finalCursors, vaultResult.Cursors)
+	if backupResult.Cursors != nil {
+		maps.Copy(finalCursors, backupResult.Cursors)
 	}
 
 	// 2. Identify missing namespaces
@@ -70,7 +70,7 @@ func (s *HybridStrategy) Bootstrap(ctx context.Context, namespaces []string) (*R
 		}
 	}
 
-	// 4. Catch up from Server for namespaces that WERE in Vault
+	// 4. Catch up from Server for namespaces that WERE in S3Backup
 	// Create a set of missing namespaces for O(1) lookup
 	missingMap := make(map[string]struct{}, len(missingNamespaces))
 	for _, ns := range missingNamespaces {
@@ -85,8 +85,8 @@ func (s *HybridStrategy) Bootstrap(ctx context.Context, namespaces []string) (*R
 			continue
 		}
 
-		// It was in vault (or potentially missing but not fetched? No, missingNamespaces handles that)
-		// If it was in vault, it is in finalCursors.
+		// It was in backup (or potentially missing but not fetched? No, missingNamespaces handles that)
+		// If it was in backup, it is in finalCursors.
 		cursor, ok := finalCursors[ns]
 		if !ok {
 			// Should have been missingNamespaces if not in finalCursors

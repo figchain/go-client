@@ -2,8 +2,8 @@ package encryption
 
 import (
 	"context"
-	"crypto/rsa"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,7 +18,7 @@ import (
 	"github.com/figchain/go-client/pkg/transport"
 )
 
-type VaultConfig struct {
+type S3BackupConfig struct {
 	Bucket    string
 	Prefix    string
 	Region    string
@@ -27,27 +27,28 @@ type VaultConfig struct {
 }
 
 type Service struct {
-	transport    transport.Transport
-	privateKey   *rsa.PrivateKey
-	nskCache     sync.Map
-	VaultEnabled bool
-	VaultConfig  VaultConfig
-	ClientID     string
+	transport       transport.Transport
+	encryptionKey   []byte // X25519 Private Key
+	nskCache        sync.Map
+	S3BackupEnabled bool
+	S3BackupConfig  S3BackupConfig
+	ClientID        string
 }
 
-func NewService(t transport.Transport, privateKeyPath string) (*Service, error) {
-	pk, err := LoadPrivateKey(privateKeyPath)
+// NewService creates a new encryption service with the given Hex-encoded X25519 private key.
+func NewService(t transport.Transport, encryptionKeyHex string) (*Service, error) {
+	keyBytes, err := hex.DecodeString(encryptionKeyHex)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid encryption key hex: %w", err)
 	}
-	return NewServiceWithKey(t, pk), nil
-}
+	if len(keyBytes) != 32 {
+		return nil, fmt.Errorf("invalid encryption key length: got %d, want 32", len(keyBytes))
+	}
 
-func NewServiceWithKey(t transport.Transport, pk *rsa.PrivateKey) *Service {
 	return &Service{
-		transport:  t,
-		privateKey: pk,
-	}
+		transport:     t,
+		encryptionKey: keyBytes,
+	}, nil
 }
 
 func (s *Service) Decrypt(ctx context.Context, fig *model.Fig, namespace string) ([]byte, error) {
@@ -70,14 +71,12 @@ func (s *Service) Decrypt(ctx context.Context, fig *model.Fig, namespace string)
 		return nil, fmt.Errorf("missing wrapped dek")
 	}
 
-	dek, err := UnwrapAESKey(wrappedDek, nsk)
+	// Previously: UnwrapAESKey (RFC3394).
+	// New Scheme: AES-GCM wrap (IV || Cyphertext).
+	// We assume strict consistency with FC-UI logic (`wrapAesKeyWithAes`)
+	dek, err := DecryptAESGCM(wrappedDek, nsk)
 	if err != nil {
-		// Fallback to AES-GCM (used by fc-ui)
-		var errGCM error
-		dek, errGCM = DecryptAESGCM(wrappedDek, nsk)
-		if errGCM != nil {
-			return nil, fmt.Errorf("unwrap dek failed (RFC3394: %v, AES-GCM: %v)", err, errGCM)
-		}
+		return nil, fmt.Errorf("unwrap dek failed: %w", err)
 	}
 
 	payload, err := DecryptAESGCM(fig.Payload, dek)
@@ -110,15 +109,15 @@ func (s *Service) getNSK(ctx context.Context, namespace, keyID string) ([]byte, 
 			matchingKey = nsKeys[0]
 		}
 	} else {
-		if !s.VaultEnabled {
-			// If api failed and vault disabled, return error
+		if !s.S3BackupEnabled {
+			// If api failed and s3 backup disabled, return error
 			return nil, err
 		}
 		// proceed to fallback
 	}
 
 	// 2. Fallback to S3
-	if matchingKey == nil && s.VaultEnabled && s.ClientID != "" {
+	if matchingKey == nil && s.S3BackupEnabled && s.ClientID != "" {
 		s3Key, errS3 := s.fetchFromS3(ctx, namespace)
 		if errS3 != nil {
 			log.Printf("WARN: Failed to fetch NSK from S3: %v", errS3)
@@ -134,14 +133,15 @@ func (s *Service) getNSK(ctx context.Context, namespace, keyID string) ([]byte, 
 		return nil, fmt.Errorf("no matching key found for namespace %s and keyId %s (API: %v)", namespace, keyID, err)
 	}
 
-	wrappedKeyBytes, err := base64.StdEncoding.DecodeString(matchingKey.WrappedKey)
+	// In the new scheme, WrappedKey is: EphPub || IV || Ciphertext (Base64 encoded)
+	wrappedKeyBlob, err := base64.StdEncoding.DecodeString(matchingKey.WrappedKey)
 	if err != nil {
-		return nil, fmt.Errorf("decode nsk: %w", err)
+		return nil, fmt.Errorf("decode nsk blob: %w", err)
 	}
 
-	unwrappedNsk, err := DecryptRSAOAEP(wrappedKeyBytes, s.privateKey)
+	unwrappedNsk, err := DecryptX25519(wrappedKeyBlob, s.encryptionKey)
 	if err != nil {
-		return nil, fmt.Errorf("decrypt nsk: %w", err)
+		return nil, fmt.Errorf("decrypt nsk (X25519): %w", err)
 	}
 
 	if matchingKey.KeyID != "" {
@@ -156,18 +156,18 @@ func (s *Service) fetchFromS3(ctx context.Context, namespace string) (*model.Nam
 	if err != nil {
 		return nil, err
 	}
-	if s.VaultConfig.Region != "" {
-		cfg.Region = s.VaultConfig.Region
+	if s.S3BackupConfig.Region != "" {
+		cfg.Region = s.S3BackupConfig.Region
 	}
 
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		if s.VaultConfig.Endpoint != "" {
-			o.BaseEndpoint = aws.String(s.VaultConfig.Endpoint)
+		if s.S3BackupConfig.Endpoint != "" {
+			o.BaseEndpoint = aws.String(s.S3BackupConfig.Endpoint)
 		}
-		o.UsePathStyle = s.VaultConfig.PathStyle
+		o.UsePathStyle = s.S3BackupConfig.PathStyle
 	})
 
-	prefix := s.VaultConfig.Prefix
+	prefix := s.S3BackupConfig.Prefix
 	if prefix != "" && !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
@@ -176,7 +176,7 @@ func (s *Service) fetchFromS3(ctx context.Context, namespace string) (*model.Nam
 	key := fmt.Sprintf("%sdevices/%s/namespaces/%s.json", prefix, s.ClientID, namespace)
 
 	out, err := client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(s.VaultConfig.Bucket),
+		Bucket: aws.String(s.S3BackupConfig.Bucket),
 		Key:    aws.String(key),
 	})
 	if err != nil {

@@ -1,7 +1,8 @@
 package transport
 
 import (
-	"crypto/rsa"
+	"crypto/ed25519"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -31,7 +32,7 @@ func (p *SharedSecretTokenProvider) GetToken() (string, error) {
 
 // PrivateKeyTokenProvider generates a signed JWT using a private key.
 type PrivateKeyTokenProvider struct {
-	privateKey       *rsa.PrivateKey
+	privateKey       ed25519.PrivateKey
 	serviceAccountID string
 	tenantID         string
 	namespace        string
@@ -41,15 +42,29 @@ type PrivateKeyTokenProvider struct {
 
 // NewPrivateKeyTokenProvider creates a new PrivateKeyTokenProvider.
 // If tokenTTL is 0, it defaults to 10 minutes.
-func NewPrivateKeyTokenProvider(privateKey *rsa.PrivateKey, serviceAccountID, tenantID, namespace, keyID string) *PrivateKeyTokenProvider {
-	return NewPrivateKeyTokenProviderWithTTL(privateKey, serviceAccountID, tenantID, namespace, keyID, 10*time.Minute)
+func NewPrivateKeyTokenProvider(privateKeyHex, serviceAccountID, tenantID, namespace, keyID string) (*PrivateKeyTokenProvider, error) {
+	return NewPrivateKeyTokenProviderWithTTL(privateKeyHex, serviceAccountID, tenantID, namespace, keyID, 10*time.Minute)
 }
 
 // NewPrivateKeyTokenProviderWithTTL creates a new PrivateKeyTokenProvider with a custom TTL.
-func NewPrivateKeyTokenProviderWithTTL(privateKey *rsa.PrivateKey, serviceAccountID, tenantID, namespace, keyID string, tokenTTL time.Duration) *PrivateKeyTokenProvider {
+func NewPrivateKeyTokenProviderWithTTL(privateKeyHex, serviceAccountID, tenantID, namespace, keyID string, tokenTTL time.Duration) (*PrivateKeyTokenProvider, error) {
 	if tokenTTL == 0 {
 		tokenTTL = 10 * time.Minute
 	}
+
+	privBytes, err := hex.DecodeString(privateKeyHex)
+	if err != nil {
+		return nil, fmt.Errorf("invalid private key hex: %w", err)
+	}
+	var privateKey ed25519.PrivateKey
+	if len(privBytes) == ed25519.SeedSize {
+		privateKey = ed25519.NewKeyFromSeed(privBytes)
+	} else if len(privBytes) == ed25519.PrivateKeySize {
+		privateKey = ed25519.PrivateKey(privBytes)
+	} else {
+		return nil, fmt.Errorf("invalid ed25519 private key length: got %d, want %d or %d", len(privBytes), ed25519.SeedSize, ed25519.PrivateKeySize)
+	}
+
 	return &PrivateKeyTokenProvider{
 		privateKey:       privateKey,
 		serviceAccountID: serviceAccountID,
@@ -57,7 +72,7 @@ func NewPrivateKeyTokenProviderWithTTL(privateKey *rsa.PrivateKey, serviceAccoun
 		namespace:        namespace,
 		keyID:            keyID,
 		tokenTTL:         tokenTTL,
-	}
+	}, nil
 }
 
 func (p *PrivateKeyTokenProvider) GetToken() (string, error) {
@@ -74,7 +89,7 @@ func (p *PrivateKeyTokenProvider) GetToken() (string, error) {
 		claims["namespace"] = p.namespace
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
 	if p.keyID != "" {
 		token.Header["kid"] = p.keyID
 	}

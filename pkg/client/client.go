@@ -2,18 +2,21 @@ package client
 
 import (
 	"context"
-	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"log"
 	"maps"
+	"net/url"
 	"os"
 	"reflect"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/hamba/avro/v2"
 
+	"github.com/figchain/go-client/pkg/backup"
 	"github.com/figchain/go-client/pkg/bootstrap"
 	"github.com/figchain/go-client/pkg/config"
 	"github.com/figchain/go-client/pkg/encryption"
@@ -21,8 +24,6 @@ import (
 	"github.com/figchain/go-client/pkg/model"
 	"github.com/figchain/go-client/pkg/store"
 	"github.com/figchain/go-client/pkg/transport"
-	"github.com/figchain/go-client/pkg/util"
-	"github.com/figchain/go-client/pkg/vault"
 )
 
 // AvroRecord is an interface that provides the Avro schema.
@@ -60,18 +61,19 @@ func NewClientFromConfig(path string, opts ...config.Option) (*Client, error) {
 	// 2. Read JSON
 	// We define a struct matching client-config.json
 	type ClientConfig struct {
-		Namespace     string `json:"namespace"`
-		CredentialID  string `json:"credentialId"`
-		PrivateKey    string `json:"privateKey"`
-		EnvironmentID string `json:"environmentId"`
-		TenantID      string `json:"tenantId"`
+		Namespace     string   `json:"namespace"`
+		Namespaces    []string `json:"namespaces"`
+		CredentialID  string   `json:"credentialId"`
+		PrivateKey    string   `json:"privateKey"`
+		EnvironmentID string   `json:"environmentId"`
+		TenantID      string   `json:"tenantId"`
 		// Backup configuration is handled separately or via Env
-		VaultEnabled   *bool  `json:"vaultEnabled"`
-		VaultBucket    string `json:"vaultBucket"`
-		VaultPrefix    string `json:"vaultPrefix"`
-		VaultRegion    string `json:"vaultRegion"`
-		VaultEndpoint  string `json:"vaultEndpoint"`
-		VaultPathStyle bool   `json:"vaultPathStyle"`
+		S3BackupEnabled         *bool  `json:"s3BackupEnabled"`
+		S3BackupBucket          string `json:"s3BackupBucket"`
+		S3BackupPrefix          string `json:"s3BackupPrefix"`
+		S3BackupRegion          string `json:"s3BackupRegion"`
+		S3BackupEndpoint        string `json:"s3BackupEndpoint"`
+		S3BackupPathStyleAccess bool   `json:"s3BackupPathStyleAccess"`
 	}
 
 	fileBytes, err := os.ReadFile(path)
@@ -87,35 +89,51 @@ func NewClientFromConfig(path string, opts ...config.Option) (*Client, error) {
 	// 3. Apply JSON values as Defaults (fill if empty)
 	// Note: LoadConfig("") might have left fields empty if not in Env or yaml.
 
-	if len(cfg.Namespaces) == 0 && cc.Namespace != "" {
-		cfg.Namespaces = []string{cc.Namespace}
+	// Merge Namespaces
+	nsMap := make(map[string]struct{})
+	for _, ns := range cfg.Namespaces {
+		nsMap[ns] = struct{}{}
+	}
+	if cc.Namespace != "" {
+		nsMap[cc.Namespace] = struct{}{}
+	}
+	for _, ns := range cc.Namespaces {
+		if ns != "" {
+			nsMap[ns] = struct{}{}
+		}
+	}
+	if len(nsMap) > 0 {
+		cfg.Namespaces = make([]string, 0, len(nsMap))
+		for ns := range nsMap {
+			cfg.Namespaces = append(cfg.Namespaces, ns)
+		}
 	}
 
 	if cfg.AuthCredentialID == "" && cc.CredentialID != "" {
 		cfg.AuthCredentialID = cc.CredentialID
 	}
 
-	if cfg.AuthPrivateKeyPEM == "" && cfg.AuthPrivateKeyPath == "" && cc.PrivateKey != "" {
-		cfg.AuthPrivateKeyPEM = cc.PrivateKey
+	if cfg.AuthPrivateKey == "" && cc.PrivateKey != "" {
+		cfg.AuthPrivateKey = cc.PrivateKey
 	}
 
-	if cc.VaultEnabled != nil {
-		cfg.VaultEnabled = *cc.VaultEnabled
+	if cc.S3BackupEnabled != nil {
+		cfg.S3BackupEnabled = *cc.S3BackupEnabled
 	}
-	if cc.VaultPathStyle {
-		cfg.VaultPathStyle = true
+	if cc.S3BackupPathStyleAccess {
+		cfg.S3BackupPathStyleAccess = true
 	}
-	if cc.VaultBucket != "" {
-		cfg.VaultBucket = cc.VaultBucket
+	if cc.S3BackupBucket != "" {
+		cfg.S3BackupBucket = cc.S3BackupBucket
 	}
-	if cc.VaultPrefix != "" {
-		cfg.VaultPrefix = cc.VaultPrefix
+	if cc.S3BackupPrefix != "" {
+		cfg.S3BackupPrefix = cc.S3BackupPrefix
 	}
-	if cc.VaultRegion != "" {
-		cfg.VaultRegion = cc.VaultRegion
+	if cc.S3BackupRegion != "" {
+		cfg.S3BackupRegion = cc.S3BackupRegion
 	}
-	if cc.VaultEndpoint != "" {
-		cfg.VaultEndpoint = cc.VaultEndpoint
+	if cc.S3BackupEndpoint != "" {
+		cfg.S3BackupEndpoint = cc.S3BackupEndpoint
 	}
 
 	if cc.EnvironmentID != "" {
@@ -132,8 +150,8 @@ func NewClientFromConfig(path string, opts ...config.Option) (*Client, error) {
 	}
 
 	// 5. Create Client using the constructed config object
-	log.Printf("DEBUG NewClientFromConfig: CredID=%s, TenantID=%s, EnvID=%s, Namespaces=%v, VaultEnabled=%v, PKLen=%d",
-		cfg.AuthCredentialID, cfg.TenantID, cfg.EnvironmentID, cfg.Namespaces, cfg.VaultEnabled, len(cfg.AuthPrivateKeyPEM))
+	log.Printf("DEBUG NewClientFromConfig: CredID=%s, TenantID=%s, EnvID=%s, Namespaces=%v, S3BackupEnabled=%v, PKLen=%d",
+		cfg.AuthCredentialID, cfg.TenantID, cfg.EnvironmentID, cfg.Namespaces, cfg.S3BackupEnabled, len(cfg.AuthPrivateKey))
 	// We use WithConfig to pass the fully populated configuration to New()
 	return New(config.WithConfig(cfg))
 }
@@ -151,27 +169,18 @@ func New(opts ...config.Option) (*Client, error) {
 	if cfg.EnvironmentID == "" {
 		return nil, fmt.Errorf("EnvironmentID is required")
 	}
-	if cfg.ClientSecret == "" && cfg.AuthPrivateKeyPath == "" && cfg.AuthPrivateKeyPEM == "" {
-		return nil, fmt.Errorf("an authentication method must be configured. Please provide either a ClientSecret, AuthPrivateKeyPath, or AuthPrivateKeyPEM")
+	// Check for AuthPrivateKey (Hex)
+	authKeyHex := cfg.AuthPrivateKey
+
+	if cfg.ClientSecret == "" && authKeyHex == "" {
+		return nil, fmt.Errorf("an authentication method must be configured. Please provide either a ClientSecret or AuthPrivateKey (Hex)")
 	}
 
 	var tokenProvider transport.TokenProvider
-	var pk *rsa.PrivateKey
 
-	if cfg.AuthPrivateKeyPath != "" || cfg.AuthPrivateKeyPEM != "" {
+	if authKeyHex != "" {
 		if len(cfg.Namespaces) > 1 {
 			return nil, fmt.Errorf("private key authentication can only be used with a single namespace")
-		}
-
-		var err error
-		if cfg.AuthPrivateKeyPEM != "" {
-			pk, err = util.ParseRSAPrivateKey([]byte(cfg.AuthPrivateKeyPEM))
-		} else {
-			pk, err = util.LoadRSAPrivateKey(cfg.AuthPrivateKeyPath)
-		}
-
-		if err != nil {
-			return nil, fmt.Errorf("failed to load auth private key: %w", err)
 		}
 
 		// Use EnvironmentID as placeholder if AuthClientID not set, but prefer AuthClientID
@@ -188,7 +197,11 @@ func New(opts ...config.Option) (*Client, error) {
 			namespace = cfg.Namespaces[0]
 		}
 
-		tokenProvider = transport.NewPrivateKeyTokenProvider(pk, serviceAccountID, cfg.TenantID, namespace, cfg.AuthCredentialID)
+		var err error
+		tokenProvider, err = transport.NewPrivateKeyTokenProvider(authKeyHex, serviceAccountID, cfg.TenantID, namespace, cfg.AuthCredentialID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create token provider: %w", err)
+		}
 	} else {
 		tokenProvider = transport.NewSharedSecretTokenProvider(cfg.ClientSecret)
 	}
@@ -196,24 +209,34 @@ func New(opts ...config.Option) (*Client, error) {
 	tr := transport.NewHTTPTransport(cfg.HTTPClient, cfg.BaseURL, tokenProvider, cfg.EnvironmentID)
 
 	var encService *encryption.Service
-	if cfg.EncryptionPrivateKeyPath != "" {
-		svc, err := encryption.NewService(tr, cfg.EncryptionPrivateKeyPath)
+	// Check for EncryptionPrivateKey (Hex)
+	encKeyHex := cfg.EncryptionPrivateKey
+	if encKeyHex == "" {
+		// Fallback: Reuse Auth Key if it's a valid hex seed (64 chars = 32 bytes)
+		if len(authKeyHex) == 64 {
+			encKeyHex = authKeyHex
+		} else if len(authKeyHex) == 128 {
+			// If full private key (seed + pub), take the seed (first 32 bytes)
+			encKeyHex = authKeyHex[:64]
+		}
+	}
+
+	if encKeyHex != "" {
+		svc, err := encryption.NewService(tr, encKeyHex)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create encryption service: %w", err)
 		}
 		encService = svc
-	} else if pk != nil {
-		encService = encryption.NewServiceWithKey(tr, pk)
 	}
 
-	if encService != nil && cfg.VaultEnabled {
-		encService.VaultEnabled = true
-		encService.VaultConfig = encryption.VaultConfig{
-			Bucket:    cfg.VaultBucket,
-			Prefix:    cfg.VaultPrefix,
-			Region:    cfg.VaultRegion,
-			Endpoint:  cfg.VaultEndpoint,
-			PathStyle: cfg.VaultPathStyle,
+	if encService != nil && cfg.S3BackupEnabled {
+		encService.S3BackupEnabled = true
+		encService.S3BackupConfig = encryption.S3BackupConfig{
+			Bucket:    cfg.S3BackupBucket,
+			Prefix:    cfg.S3BackupPrefix,
+			Region:    cfg.S3BackupRegion,
+			Endpoint:  cfg.S3BackupEndpoint,
+			PathStyle: cfg.S3BackupPathStyleAccess,
 		}
 		// Prefer CredentialID (targetId)
 		encService.ClientID = cfg.AuthCredentialID
@@ -240,31 +263,31 @@ func New(opts ...config.Option) (*Client, error) {
 	var strategy bootstrap.Strategy
 	serverStrategy := bootstrap.NewServerStrategy(tr, cfg.EnvironmentID, cfg.AsOfTimestamp)
 
-	if cfg.VaultEnabled {
-		vs, err := vault.NewDefaultVaultService(context.Background(), cfg)
+	if cfg.S3BackupEnabled {
+		vs, err := backup.NewDefaultS3BackupService(context.Background(), cfg)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create vault service: %w", err)
+			return nil, fmt.Errorf("failed to create s3 backup service: %w", err)
 		}
-		vaultStrategy := bootstrap.NewVaultStrategy(vs)
+		s3BackupStrategy := bootstrap.NewS3BackupStrategy(vs)
 
 		switch cfg.BootstrapStrategy {
-		case config.BootstrapStrategyVault:
-			strategy = vaultStrategy
+		case config.BootstrapStrategyS3BackupOnly:
+			strategy = s3BackupStrategy
 		case config.BootstrapStrategyHybrid:
-			strategy = bootstrap.NewHybridStrategy(vaultStrategy, serverStrategy, tr, cfg.EnvironmentID)
+			strategy = bootstrap.NewHybridStrategy(s3BackupStrategy, serverStrategy, tr, cfg.EnvironmentID)
 		case config.BootstrapStrategyServerFirst, "":
-			strategy = bootstrap.NewFallbackStrategy(serverStrategy, vaultStrategy)
+			strategy = bootstrap.NewFallbackStrategy(serverStrategy, s3BackupStrategy)
 		case config.BootstrapStrategyServer:
 			strategy = serverStrategy
 		default:
 			log.Printf("WARN Unknown bootstrap strategy %q, using Default (ServerFirst with Fallback)", cfg.BootstrapStrategy)
-			strategy = bootstrap.NewFallbackStrategy(serverStrategy, vaultStrategy)
+			strategy = bootstrap.NewFallbackStrategy(serverStrategy, s3BackupStrategy)
 		}
 	} else {
 		strategy = serverStrategy
 	}
 
-	log.Printf("INFO Bootstrapping with strategy: %T", strategy.String())
+	log.Printf("INFO Bootstrapping with strategy: %T", strategy)
 
 	// Execute Bootstrap
 	result, err := strategy.Bootstrap(context.Background(), cfg.Namespaces)
@@ -326,7 +349,16 @@ func (c *Client) GetFig(key string, target any, ctx *evaluation.EvaluationContex
 	schemaContent, ok := c.schemas[figFamily.Definition.SchemaURI]
 	c.mu.RUnlock()
 	if !ok {
-		return fmt.Errorf("schema not found for URI: %s", figFamily.Definition.SchemaURI)
+		// Fallback: Try to fetch the schema from the server on demand
+		log.Printf("INFO Schema for URI %s not found in cache, fetching from server...", figFamily.Definition.SchemaURI)
+		content, err := c.fetchSchemaByURI(figFamily.Definition.SchemaURI)
+		if err != nil {
+			return fmt.Errorf("schema not found for URI: %s and failed to fetch on-demand: %w", figFamily.Definition.SchemaURI, err)
+		}
+		c.mu.Lock()
+		c.schemas[figFamily.Definition.SchemaURI] = content
+		c.mu.Unlock()
+		schemaContent = content
 	}
 
 	log.Printf("DEBUG SchemaContent for URI %s: %s", figFamily.Definition.SchemaURI, schemaContent)
@@ -450,11 +482,11 @@ func (c *Client) pollUpdates() {
 			}
 		}
 
-		if len(resp.FigFamilies) > 0 {
-			// Collect notifications
-			var listenerNotifications []func()
-			var watcherNotifications []func()
+		// Collect notifications
+		var listenerNotifications []func()
+		var watcherNotifications []func()
 
+		if len(resp.FigFamilies) > 0 {
 			c.mu.Lock()
 			for _, ff := range resp.FigFamilies {
 				c.store.Put(ff)
@@ -484,14 +516,6 @@ func (c *Client) pollUpdates() {
 				}
 			}
 			c.mu.Unlock()
-
-			// Notify after unlocking
-			for _, notify := range listenerNotifications {
-				notify()
-			}
-			for _, notify := range watcherNotifications {
-				notify()
-			}
 		}
 
 		if resp.Cursor != "" || len(resp.Schemas) > 0 {
@@ -506,7 +530,45 @@ func (c *Client) pollUpdates() {
 			}
 			c.mu.Unlock()
 		}
+
+		if len(resp.FigFamilies) > 0 {
+			// Notify after updating schemas and cursors
+			for _, notify := range listenerNotifications {
+				notify()
+			}
+			for _, notify := range watcherNotifications {
+				notify()
+			}
+		}
 	}
+}
+
+func (c *Client) fetchSchemaByURI(schemaURI string) (string, error) {
+	parsedURI, err := url.Parse(schemaURI)
+	if err != nil {
+		return "", fmt.Errorf("invalid schema URI: %w", err)
+	}
+
+	// URI format: tag:figchain.io,2025:namespace:schemaName:version
+	// We expect the scheme to be "tag"
+	if parsedURI.Scheme != "tag" {
+		return "", fmt.Errorf("unsupported schema URI scheme: %s", parsedURI.Scheme)
+	}
+
+	parts := strings.Split(parsedURI.Opaque, ":")
+	if len(parts) < 4 {
+		return "", fmt.Errorf("invalid tag URI format for schema: %s", schemaURI)
+	}
+
+	// parts[0] is "figchain.io,2025"
+	namespace, _ := url.QueryUnescape(parts[1])
+	schemaName, _ := url.QueryUnescape(parts[2])
+	version, err := strconv.Atoi(parts[3])
+	if err != nil {
+		return "", fmt.Errorf("invalid schema version in URI: %s", parts[3])
+	}
+
+	return c.transport.FetchSchema(c.ctx, namespace, schemaName, version)
 }
 
 // RegisterListener registers a callback for updates to a specific key.
@@ -533,8 +595,17 @@ func (c *Client) RegisterListener(key string, prototype AvroRecord, callback fun
 		schemaContent, ok := c.schemas[schemaURI]
 		c.mu.RUnlock()
 		if !ok {
-			log.Printf("WARN Listener schema not found for URI: %s", schemaURI)
-			return
+			// Fallback: Try to fetch on demand
+			log.Printf("INFO Listener schema for URI %s not found in cache, fetching from server...", schemaURI)
+			content, err := c.fetchSchemaByURI(schemaURI)
+			if err != nil {
+				log.Printf("ERROR Listener schema not found for URI: %s and failed to fetch: %v", schemaURI, err)
+				return
+			}
+			c.mu.Lock()
+			c.schemas[schemaURI] = content
+			c.mu.Unlock()
+			schemaContent = content
 		}
 
 		writerSchema, err := avro.Parse(schemaContent)
