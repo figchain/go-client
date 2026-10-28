@@ -61,3 +61,30 @@ func TestEnvCompatibilityAliases(t *testing.T) {
 		t.Errorf("expected AuthClientID client-123, got %v", cfg.AuthClientID)
 	}
 }
+
+func TestBootstrapStrategyDefaultsAndNormalization(t *testing.T) {
+	defer unsetEnv([]string{"FIGCHAIN_BOOTSTRAP_STRATEGY"})
+
+	cfg, err := LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.BootstrapStrategy != BootstrapStrategyServerFirst {
+		t.Errorf("expected default %q, got %q", BootstrapStrategyServerFirst, cfg.BootstrapStrategy)
+	}
+
+	for raw, want := range map[string]BootstrapStrategy{
+		"S3_BACKUP_ONLY": BootstrapStrategyS3BackupOnly,
+		"server_first":   BootstrapStrategyServerFirst,
+		"hybrid":         BootstrapStrategyHybrid,
+	} {
+		_ = os.Setenv("FIGCHAIN_BOOTSTRAP_STRATEGY", raw)
+		cfg, err := LoadConfig("")
+		if err != nil {
+			t.Fatalf("LoadConfig(%q) failed: %v", raw, err)
+		}
+		if cfg.BootstrapStrategy != want {
+			t.Errorf("%q: expected %q, got %q", raw, want, cfg.BootstrapStrategy)
+		}
+	}
+}

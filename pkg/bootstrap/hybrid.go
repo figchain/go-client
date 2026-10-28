@@ -12,7 +12,7 @@ import (
 
 // HybridStrategy implements bootstrapping from S3Backup then Server.
 type HybridStrategy struct {
-	backupStrategy  Strategy
+	backupStrategy Strategy
 	serverStrategy Strategy
 	transport      transport.Transport
 	environmentID  string
@@ -21,7 +21,7 @@ type HybridStrategy struct {
 // NewHybridStrategy creates a new HybridStrategy.
 func NewHybridStrategy(backup Strategy, server Strategy, tr transport.Transport, environmentID string) *HybridStrategy {
 	return &HybridStrategy{
-		backupStrategy:  backup,
+		backupStrategy: backup,
 		serverStrategy: server,
 		transport:      tr,
 		environmentID:  environmentID,

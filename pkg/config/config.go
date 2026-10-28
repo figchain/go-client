@@ -144,13 +144,21 @@ func LoadConfig(path string) (*Config, error) {
 	v.SetDefault("retry_delay", "1s")
 	v.SetDefault("use_long_polling", true)
 	v.SetDefault("s3_backup_enabled", false)
-	v.SetDefault("bootstrap_strategy", string(BootstrapStrategyServer))
+	v.SetDefault("bootstrap_strategy", string(BootstrapStrategyServerFirst))
 
 	if err := v.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, err
 		}
 		// Config file not found is fine, we just rely on defaults/env vars
+	}
+
+	// Normalize bootstrap strategy if set via env/config to ensure it matches constants
+	// Allow snake_case or SCREAMING_SNAKE_CASE to match kebab-case constants
+	if v.IsSet("bootstrap_strategy") {
+		rawStrategy := v.GetString("bootstrap_strategy")
+		normalized := strings.ReplaceAll(strings.ToLower(rawStrategy), "_", "-")
+		v.Set("bootstrap_strategy", normalized)
 	}
 
 	// Map camelCase keys from JSON to snake_case for mapstructure if needed.
@@ -167,40 +175,44 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 
-	// Handle legacy "namespace" field (single string) and "namespaces" (list)
-	// Merge them if both exist
-	uniqueNamespaces := make(map[string]struct{})
+	// Handle legacy "namespace" field (single string) and "namespaces" (list).
+	// Merge them, dropping duplicates but keeping the configured order.
+	var finalNamespaces []string
+	seen := make(map[string]struct{})
+	addNamespace := func(ns string) {
+		ns = strings.TrimSpace(ns)
+		if ns == "" {
+			return
+		}
+		if _, dup := seen[ns]; !dup {
+			seen[ns] = struct{}{}
+			finalNamespaces = append(finalNamespaces, ns)
+		}
+	}
 
 	if v.IsSet("namespace") {
-		ns := v.GetString("namespace")
-		if strings.TrimSpace(ns) != "" {
-			uniqueNamespaces[ns] = struct{}{}
-		}
+		addNamespace(v.GetString("namespace"))
 	}
 
 	if v.IsSet("namespaces") {
 		switch val := v.Get("namespaces").(type) {
 		case string:
 			for _, s := range splitAndTrim(val) {
-				uniqueNamespaces[s] = struct{}{}
+				addNamespace(s)
+			}
+		case []string:
+			for _, s := range val {
+				addNamespace(s)
 			}
 		case []interface{}:
 			for _, it := range val {
 				if s, ok := it.(string); ok {
-					s = strings.TrimSpace(s)
-					if s != "" {
-						uniqueNamespaces[s] = struct{}{}
-					}
+					addNamespace(s)
 				}
 			}
 		}
 	}
 
-	// Flatten unique map to slice
-	finalNamespaces := make([]string, 0, len(uniqueNamespaces))
-	for ns := range uniqueNamespaces {
-		finalNamespaces = append(finalNamespaces, ns)
-	}
 	if len(finalNamespaces) > 0 {
 		v.Set("namespaces", finalNamespaces)
 	}

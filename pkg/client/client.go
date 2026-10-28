@@ -3,7 +3,9 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"maps"
 	"net/url"
@@ -12,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/hamba/avro/v2"
@@ -435,105 +438,170 @@ func (c *Client) Watch(ctx context.Context, key string) <-chan model.FigFamily {
 
 	return ch
 }
+
+// longPollWait is how long the server may hold an update request open.
+// Kept under common proxy/load-balancer idle timeouts (often 60s).
+const longPollWait = 30 * time.Second
+
+// longPollFallbackAfter is how many consecutive in-transit failures (timeouts,
+// dropped connections) in long-poll mode switch a namespace to plain polling.
+const longPollFallbackAfter = 3
+
+// pollLoop starts one poller per namespace so a long poll on a quiet namespace
+// never delays updates for another.
 func (c *Client) pollLoop() {
 	defer c.wg.Done()
+
+	c.mu.RLock()
+	namespaces := make([]string, 0, len(c.namespaceCursors))
+	for ns := range c.namespaceCursors {
+		namespaces = append(namespaces, ns)
+	}
+	c.mu.RUnlock()
+
+	var pollers sync.WaitGroup
+	for _, ns := range namespaces {
+		pollers.Add(1)
+		go func() {
+			defer pollers.Done()
+			c.pollNamespace(ns)
+		}()
+	}
+	pollers.Wait()
+}
+
+// pollNamespace is the single update loop for both transports. Long polling
+// and plain polling differ only in how long the server may wait and how long
+// the client pauses before the next request.
+func (c *Client) pollNamespace(ns string) {
+	longPoll := c.cfg.UseLongPolling
+	transitFailures := 0
 
 	for {
 		select {
 		case <-c.closeCh:
 			return
 		default:
-			// Perform long poll
-			c.pollUpdates()
+		}
+
+		wait := time.Duration(0)
+		if longPoll {
+			wait = longPollWait
+		}
+
+		c.mu.RLock()
+		cursor := c.namespaceCursors[ns]
+		c.mu.RUnlock()
+
+		resp, err := c.transport.FetchUpdateWait(c.ctx, &model.UpdateFetchRequest{
+			Namespace:     ns,
+			Cursor:        cursor,
+			EnvironmentID: c.cfg.EnvironmentID,
+		}, wait)
+
+		pause := c.cfg.PollingInterval
+		switch {
+		case err != nil && c.ctx.Err() != nil:
+			return // shutting down
+		case err != nil:
+			log.Printf("Failed to fetch updates for %s: %v", ns, err)
+			if longPoll && isTransitFailure(err) {
+				transitFailures++
+				if transitFailures >= longPollFallbackAfter {
+					log.Printf("Long polling for %s failed %d times in transit; falling back to polling every %v",
+						ns, transitFailures, c.cfg.PollingInterval)
+					longPoll = false
+				}
+			}
+		default:
+			transitFailures = 0
+			c.applyUpdate(ns, resp)
+			if longPoll {
+				pause = 0 // the server already waited; reconnect straight away
+			}
+		}
+
+		if pause > 0 {
+			select {
+			case <-c.closeCh:
+				return
+			case <-time.After(pause):
+			}
 		}
 	}
 }
 
-func (c *Client) pollUpdates() {
-	c.mu.RLock()
-	cursors := make(map[string]string)
-	maps.Copy(cursors, c.namespaceCursors)
-	c.mu.RUnlock()
+// isTransitFailure reports whether err looks like the connection being cut or
+// stalled in transit (what proxies hostile to long polling do), rather than
+// the server answering with an error.
+func isTransitFailure(err error) bool {
+	var statusErr *transport.StatusError
+	if errors.As(err, &statusErr) {
+		return false
+	}
+	return errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, syscall.ECONNRESET)
+}
 
-	for ns, cursor := range cursors {
-		req := &model.UpdateFetchRequest{
-			Namespace:     ns,
-			Cursor:        cursor,
-			EnvironmentID: c.cfg.EnvironmentID,
-		}
-		resp, err := c.transport.FetchUpdate(c.ctx, req)
-		if err != nil {
-			if c.ctx.Err() == context.Canceled {
-				// Shutdown in progress, exit quietly
-				return
-			}
-			log.Printf("Failed to fetch updates for %s: %v", ns, err)
-			// Prevent tight loop on error (backoff)
-			select {
-			case <-c.closeCh:
-				return
-			case <-time.After(c.cfg.PollingInterval):
-				continue
-			}
-		}
+func (c *Client) applyUpdate(ns string, resp *model.UpdateFetchResponse) {
+	// Collect notifications
+	var listenerNotifications []func()
+	var watcherNotifications []func()
 
-		// Collect notifications
-		var listenerNotifications []func()
-		var watcherNotifications []func()
+	if len(resp.FigFamilies) > 0 {
+		c.mu.Lock()
+		for _, ff := range resp.FigFamilies {
+			c.store.Put(ff)
 
-		if len(resp.FigFamilies) > 0 {
-			c.mu.Lock()
-			for _, ff := range resp.FigFamilies {
-				c.store.Put(ff)
-
-				// Collect listener notifications
-				if callbacks, ok := c.listeners[ff.Definition.Key]; ok {
-					for _, cb := range callbacks {
-						// Capture ff
-						ffCopy := ff
-						listenerNotifications = append(listenerNotifications, func() { cb(ffCopy) })
-					}
-				}
-
-				// Collect watcher notifications
-				if chans, ok := c.watchers[ff.Definition.Key]; ok {
-					for _, ch := range chans {
-						// Capture ff
-						ffCopy := ff
-						watcherNotifications = append(watcherNotifications, func() {
-							select {
-							case ch <- ffCopy:
-							default:
-								// Drop update if channel is full
-							}
-						})
-					}
+			// Collect listener notifications
+			if callbacks, ok := c.listeners[ff.Definition.Key]; ok {
+				for _, cb := range callbacks {
+					// Capture ff
+					ffCopy := ff
+					listenerNotifications = append(listenerNotifications, func() { cb(ffCopy) })
 				}
 			}
-			c.mu.Unlock()
-		}
 
-		if resp.Cursor != "" || len(resp.Schemas) > 0 {
-			c.mu.Lock()
-			if resp.Cursor != "" {
-				c.namespaceCursors[ns] = resp.Cursor
-			}
-			if len(resp.Schemas) > 0 {
-				for k, v := range resp.Schemas {
-					c.schemas[k] = v
+			// Collect watcher notifications
+			if chans, ok := c.watchers[ff.Definition.Key]; ok {
+				for _, ch := range chans {
+					// Capture ff
+					ffCopy := ff
+					watcherNotifications = append(watcherNotifications, func() {
+						select {
+						case ch <- ffCopy:
+						default:
+							// Drop update if channel is full
+						}
+					})
 				}
 			}
-			c.mu.Unlock()
 		}
+		c.mu.Unlock()
+	}
 
-		if len(resp.FigFamilies) > 0 {
-			// Notify after updating schemas and cursors
-			for _, notify := range listenerNotifications {
-				notify()
+	if resp.Cursor != "" || len(resp.Schemas) > 0 {
+		c.mu.Lock()
+		if resp.Cursor != "" {
+			c.namespaceCursors[ns] = resp.Cursor
+		}
+		if len(resp.Schemas) > 0 {
+			for k, v := range resp.Schemas {
+				c.schemas[k] = v
 			}
-			for _, notify := range watcherNotifications {
-				notify()
-			}
+		}
+		c.mu.Unlock()
+	}
+
+	if len(resp.FigFamilies) > 0 {
+		// Notify after updating schemas and cursors
+		for _, notify := range listenerNotifications {
+			notify()
+		}
+		for _, notify := range watcherNotifications {
+			notify()
 		}
 	}
 }
