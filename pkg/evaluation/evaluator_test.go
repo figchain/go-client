@@ -193,4 +193,3 @@ func TestEvaluationContext_Merge(t *testing.T) {
 		t.Errorf("Merged context should preserve the original context behavior")
 	}
 }
-

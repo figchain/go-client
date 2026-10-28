@@ -3,8 +3,8 @@ package bootstrap
 import (
 	"context"
 
-	"github.com/figchain/go-client/pkg/model"
 	"github.com/figchain/go-client/pkg/backup"
+	"github.com/figchain/go-client/pkg/model"
 )
 
 // S3BackupStrategy implements bootstrapping from the FigChain S3Backup (S3).
