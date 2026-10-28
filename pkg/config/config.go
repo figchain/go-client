@@ -144,13 +144,21 @@ func LoadConfig(path string) (*Config, error) {
 	v.SetDefault("retry_delay", "1s")
 	v.SetDefault("use_long_polling", true)
 	v.SetDefault("s3_backup_enabled", false)
-	v.SetDefault("bootstrap_strategy", string(BootstrapStrategyServer))
+	v.SetDefault("bootstrap_strategy", string(BootstrapStrategyServerFirst))
 
 	if err := v.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, err
 		}
 		// Config file not found is fine, we just rely on defaults/env vars
+	}
+
+	// Normalize bootstrap strategy if set via env/config to ensure it matches constants
+	// Allow snake_case or SCREAMING_SNAKE_CASE to match kebab-case constants
+	if v.IsSet("bootstrap_strategy") {
+		rawStrategy := v.GetString("bootstrap_strategy")
+		normalized := strings.ReplaceAll(strings.ToLower(rawStrategy), "_", "-")
+		v.Set("bootstrap_strategy", normalized)
 	}
 
 	// Map camelCase keys from JSON to snake_case for mapstructure if needed.
