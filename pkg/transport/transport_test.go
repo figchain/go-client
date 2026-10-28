@@ -3,9 +3,11 @@ package transport
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/figchain/go-client/pkg/model"
 	"github.com/hamba/avro/v2"
@@ -167,5 +169,28 @@ func TestHTTPTransport_Error(t *testing.T) {
 	_, err := tr.FetchInitial(context.Background(), &model.InitialFetchRequest{})
 	if err == nil {
 		t.Error("Expected error, got nil")
+	}
+}
+
+func TestHTTPTransport_FetchUpdateWaitSendsLongPollHeader(t *testing.T) {
+	var got []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get(LongPollTimeoutHeader))
+		w.WriteHeader(http.StatusInternalServerError) // body irrelevant here
+	}))
+	defer server.Close()
+
+	tr := NewHTTPTransport(server.Client(), server.URL, NewSharedSecretTokenProvider("secret"), "env-1")
+	req := &model.UpdateFetchRequest{Namespace: "ns-1", EnvironmentID: "env-1"}
+
+	_, err := tr.FetchUpdateWait(context.Background(), req, 30*time.Second)
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected StatusError 500, got %v", err)
+	}
+	_, _ = tr.FetchUpdate(context.Background(), req)
+
+	if len(got) != 2 || got[0] != "30" || got[1] != "" {
+		t.Errorf("long-poll headers = %q, want [\"30\" \"\"]", got)
 	}
 }

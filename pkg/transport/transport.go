@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
+	"time"
 
 	"github.com/figchain/go-client/pkg/model"
 	"github.com/hamba/avro/v2"
@@ -18,6 +20,9 @@ import (
 type Transport interface {
 	FetchInitial(ctx context.Context, req *model.InitialFetchRequest) (*model.InitialFetchResponse, error)
 	FetchUpdate(ctx context.Context, req *model.UpdateFetchRequest) (*model.UpdateFetchResponse, error)
+	// FetchUpdateWait asks the server to hold the request open for up to wait
+	// until updates arrive (long polling). A zero wait returns immediately.
+	FetchUpdateWait(ctx context.Context, req *model.UpdateFetchRequest, wait time.Duration) (*model.UpdateFetchResponse, error)
 	FetchSchema(ctx context.Context, namespace, name string, version int) (string, error)
 	GetNamespaceKey(ctx context.Context, namespace string) ([]*model.NamespaceKey, error)
 	UploadPublicKey(ctx context.Context, key *model.UserPublicKey) error
@@ -65,7 +70,7 @@ func (t *HTTPTransport) FetchInitial(ctx context.Context, req *model.InitialFetc
 	}
 	// OCF encoder writes to buf
 
-	respBytes, err := t.doRequest(ctx, endpoint, buf.Bytes())
+	respBytes, err := t.doRequest(ctx, endpoint, buf.Bytes(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -89,6 +94,18 @@ func (t *HTTPTransport) FetchInitial(ctx context.Context, req *model.InitialFetc
 }
 
 func (t *HTTPTransport) FetchUpdate(ctx context.Context, req *model.UpdateFetchRequest) (*model.UpdateFetchResponse, error) {
+	return t.FetchUpdateWait(ctx, req, 0)
+}
+
+// LongPollTimeoutHeader tells the server how many seconds it may hold an
+// update request open waiting for changes; absent or 0 means respond now.
+const LongPollTimeoutHeader = "X-Long-Poll-Timeout"
+
+// requestSlack is added to the long-poll wait for the client-side deadline,
+// so a connection silently dropped mid-wait (no RST) still fails promptly.
+const requestSlack = 5 * time.Second
+
+func (t *HTTPTransport) FetchUpdateWait(ctx context.Context, req *model.UpdateFetchRequest, wait time.Duration) (*model.UpdateFetchResponse, error) {
 	endpoint := fmt.Sprintf("%s/data/updates", t.baseURL)
 	scheme, err := avro.Parse(model.Schema)
 	if err != nil {
@@ -110,7 +127,13 @@ func (t *HTTPTransport) FetchUpdate(ctx context.Context, req *model.UpdateFetchR
 		return nil, fmt.Errorf("failed to flush OCF encoder: %w", err)
 	}
 
-	respBytes, err := t.doRequest(ctx, endpoint, buf.Bytes())
+	ctx, cancel := context.WithTimeout(ctx, wait+requestSlack)
+	defer cancel()
+	var headers map[string]string
+	if secs := int(wait / time.Second); secs > 0 {
+		headers = map[string]string{LongPollTimeoutHeader: strconv.Itoa(secs)}
+	}
+	respBytes, err := t.doRequest(ctx, endpoint, buf.Bytes(), headers)
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +276,7 @@ func (t *HTTPTransport) Close() error {
 	return nil
 }
 
-func (t *HTTPTransport) doRequest(ctx context.Context, urlStr string, reqBytes []byte) ([]byte, error) {
+func (t *HTTPTransport) doRequest(ctx context.Context, urlStr string, reqBytes []byte, headers map[string]string) ([]byte, error) {
 	u, err := url.Parse(urlStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid url: %w", err)
@@ -265,6 +288,9 @@ func (t *HTTPTransport) doRequest(ctx context.Context, urlStr string, reqBytes [
 	}
 
 	req.Header.Set("Content-Type", "application/octet-stream")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 	token, err := t.tokenProvider.GetToken()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get auth token: %w", err)
@@ -283,7 +309,7 @@ func (t *HTTPTransport) doRequest(ctx context.Context, urlStr string, reqBytes [
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("server returned error %d: %s", resp.StatusCode, string(bodyBytes))
+		return nil, &StatusError{StatusCode: resp.StatusCode, Body: string(bodyBytes)}
 	}
 
 	return bodyBytes, nil
@@ -300,4 +326,15 @@ func findSchemaByName(root avro.Schema, name string) avro.Schema {
 		}
 	}
 	return root
+}
+
+// StatusError is returned when the server answers with a non-200 status, as
+// opposed to the request failing in transit.
+type StatusError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("server returned error %d: %s", e.StatusCode, e.Body)
 }
