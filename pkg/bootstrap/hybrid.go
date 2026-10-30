@@ -10,6 +10,9 @@ import (
 	"github.com/figchain/go-client/pkg/transport"
 )
 
+// maxCatchUpPages bounds the hybrid catch-up loop.
+const maxCatchUpPages = 1000
+
 // HybridStrategy implements bootstrapping from S3Backup then Server.
 type HybridStrategy struct {
 	backupStrategy Strategy
@@ -42,6 +45,9 @@ func (s *HybridStrategy) Bootstrap(ctx context.Context, namespaces []string) (*R
 		allFamilies = append(allFamilies, backupResult.FigFamilies...)
 	}
 
+	finalSchemas := make(map[string]string)
+	maps.Copy(finalSchemas, backupResult.Schemas)
+
 	finalCursors := make(map[string]string)
 	if backupResult.Cursors != nil {
 		maps.Copy(finalCursors, backupResult.Cursors)
@@ -68,6 +74,7 @@ func (s *HybridStrategy) Bootstrap(ctx context.Context, namespaces []string) (*R
 		if serverResult.Cursors != nil {
 			maps.Copy(finalCursors, serverResult.Cursors)
 		}
+		maps.Copy(finalSchemas, serverResult.Schemas)
 	}
 
 	// 4. Catch up from Server for namespaces that WERE in S3Backup
@@ -93,27 +100,36 @@ func (s *HybridStrategy) Bootstrap(ctx context.Context, namespaces []string) (*R
 			continue
 		}
 
-		req := &model.UpdateFetchRequest{
-			Namespace:     ns,
-			Cursor:        cursor,
-			EnvironmentID: s.environmentID,
-		}
-		resp, err := s.transport.FetchUpdate(ctx, req)
-		if err != nil {
-			return nil, fmt.Errorf("WARN failed to catch up for %s: %w", ns, err)
-		}
+		// The server returns changes a page at a time, so keep fetching until the
+		// cursor stops advancing; a single call can leave the client behind.
+		for page := 0; page < maxCatchUpPages; page++ {
+			req := &model.UpdateFetchRequest{
+				Namespace:     ns,
+				Cursor:        cursor,
+				EnvironmentID: s.environmentID,
+			}
+			resp, err := s.transport.FetchUpdate(ctx, req)
+			if err != nil {
+				return nil, fmt.Errorf("WARN failed to catch up for %s: %w", ns, err)
+			}
 
-		if len(resp.FigFamilies) > 0 {
 			allFamilies = append(allFamilies, resp.FigFamilies...)
-		}
-		if resp.Cursor != "" {
-			finalCursors[ns] = resp.Cursor
+			maps.Copy(finalSchemas, resp.Schemas)
+			if resp.Cursor == "" || resp.Cursor == cursor || len(resp.FigFamilies) == 0 {
+				if resp.Cursor != "" {
+					finalCursors[ns] = resp.Cursor
+				}
+				break
+			}
+			cursor = resp.Cursor
+			finalCursors[ns] = cursor
 		}
 	}
 
 	return &Result{
 		FigFamilies: allFamilies,
 		Cursors:     finalCursors,
+		Schemas:     finalSchemas,
 	}, nil
 }
 

@@ -2,7 +2,6 @@ package backup
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 
@@ -10,18 +9,13 @@ import (
 	"github.com/figchain/go-client/pkg/model"
 )
 
-type BackupFile struct {
-	Version        string `json:"version"`
-	KeyFingerprint string `json:"keyFingerprint"`
-	EncryptedKey   string `json:"encryptedKey"`
-	EncryptedData  string `json:"encryptedData"`
-}
-
 type BackupPayload struct {
 	TenantID    string            `json:"tenantId"`
 	GeneratedAt string            `json:"generatedAt"`
 	SyncToken   string            `json:"syncToken"`
 	Items       []model.FigFamily `json:"items"`
+	// Schemas maps schema URI to schema text, from the items and the v3 public section.
+	Schemas map[string]string `json:"-"`
 }
 
 type S3BackupService struct {
@@ -47,13 +41,16 @@ func (s *S3BackupService) LoadBackup(ctx context.Context) (*BackupPayload, error
 	}
 
 	// 1. Load Private Key
-	privateKey, err := LoadPrivateKey(s.cfg.AuthPrivateKey)
+	// Backups are encrypted to the X25519 encryption key. Only fall back to the auth key when no
+	// encryption key is configured: a valid Ed25519 auth key always loads, so trying it first
+	// would silently pick the wrong key whenever both are set.
+	keyHex := s.cfg.EncryptionPrivateKey
+	if keyHex == "" {
+		keyHex = s.cfg.AuthPrivateKey
+	}
+	privateKey, err := LoadPrivateKey(keyHex)
 	if err != nil {
-		// Fallback to encryption key if auth key not sufficient
-		privateKey, err = LoadPrivateKey(s.cfg.EncryptionPrivateKey)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load private key: %w", err)
-		}
+		return nil, fmt.Errorf("failed to load private key: %w", err)
 	}
 
 	// 2. Calculate Fingerprint
@@ -74,28 +71,5 @@ func (s *S3BackupService) LoadBackup(ctx context.Context) (*BackupPayload, error
 		return nil, fmt.Errorf("failed to read backup: %w", err)
 	}
 
-	var backup BackupFile
-	if err := json.Unmarshal(backupBytes, &backup); err != nil {
-		return nil, fmt.Errorf("failed to parse backup file: %w", err)
-	}
-
-	// 4. Decrypt AES Key
-	aesKey, err := DecryptAesKey(backup.EncryptedKey, privateKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt AES key: %w", err)
-	}
-
-	// 5. Decrypt Data
-	jsonPayload, err := DecryptData(backup.EncryptedData, aesKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt payload: %w", err)
-	}
-
-	// 6. Parse Payload
-	var payload BackupPayload
-	if err := json.Unmarshal([]byte(jsonPayload), &payload); err != nil {
-		return nil, fmt.Errorf("failed to parse payload: %w", err)
-	}
-
-	return &payload, nil
+	return DecryptBackup(backupBytes, privateKey)
 }

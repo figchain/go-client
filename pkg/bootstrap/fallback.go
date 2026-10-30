@@ -2,8 +2,12 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
+
+	"github.com/figchain/go-client/pkg/transport"
 )
 
 // FallbackStrategy implements bootstrapping from Server then S3 Backup if Server fails.
@@ -26,6 +30,14 @@ func (s *FallbackStrategy) Bootstrap(ctx context.Context, namespaces []string) (
 	result, serverErr := s.serverStrategy.Bootstrap(ctx, namespaces)
 	if serverErr == nil {
 		return result, nil
+	}
+
+	// A rejected credential is a configuration error, not an outage. Serving the
+	// backup would hide it while every later update fails the same way.
+	var statusErr *transport.StatusError
+	if errors.As(serverErr, &statusErr) &&
+		(statusErr.StatusCode == http.StatusUnauthorized || statusErr.StatusCode == http.StatusForbidden) {
+		return nil, fmt.Errorf("server rejected the client credentials, not falling back to s3 backup: %w", serverErr)
 	}
 
 	log.Printf("WARN Server bootstrap failed: %v. Falling back to S3 Backup.", serverErr)

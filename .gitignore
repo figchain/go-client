@@ -20,3 +20,6 @@ Thumbs.db
 *.swo
 *~
 e2e_go_main.go
+
+# e2e runner build
+/bin/

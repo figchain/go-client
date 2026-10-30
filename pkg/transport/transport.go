@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/figchain/go-client/pkg/model"
@@ -38,10 +39,12 @@ type HTTPTransport struct {
 }
 
 // NewHTTPTransport creates a new HTTPTransport.
+// Trailing slashes on baseURL are stripped: endpoints are joined as baseURL+"/path",
+// and a doubled slash (e.g. "/api//data/initial") is rejected by the server with 401.
 func NewHTTPTransport(client *http.Client, baseURL string, tokenProvider TokenProvider, environmentID string) *HTTPTransport {
 	return &HTTPTransport{
 		client:        client,
-		baseURL:       baseURL,
+		baseURL:       strings.TrimRight(baseURL, "/"),
 		tokenProvider: tokenProvider,
 		environmentID: environmentID,
 	}
