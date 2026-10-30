@@ -171,3 +171,37 @@ func TestDecryptBackup_V2(t *testing.T) {
 		t.Errorf("v2 should have no public section, got %v %v", pub, err)
 	}
 }
+
+func TestDecryptBackup_V3PublicSchemasDecoded(t *testing.T) {
+	payload, err := DecryptBackup(readV3(t), loadTestKey(t))
+	if err != nil {
+		t.Fatalf("decrypt: %v", err)
+	}
+	if len(payload.Schemas) == 0 {
+		t.Fatal("no schemas collected from the public section")
+	}
+	for uri, text := range payload.Schemas {
+		if !strings.HasPrefix(text, "{") {
+			t.Errorf("schema %s not base64-decoded: %q", uri, text)
+		}
+	}
+}
+
+func TestBackupPayload_LatestFigJSON(t *testing.T) {
+	js := `{"syncToken":"s","items":[{"definition":{"key":"k","namespace":"ns","schemaUri":"u","createdAt":"2026-10-30T01:44:45.408Z","updatedAt":"2026-10-30T01:44:45.408Z"},
+	"latestFig":{"figId":"f","version":"v1","encrypted":false,"payload":{"data":{"binaryData":"BlVTRCg="},"schema":{"uri":"u","content":"eyJ0eXBlIjoic3RyaW5nIn0="}}}}]}`
+	var p BackupPayload
+	if err := json.Unmarshal([]byte(js), &p); err != nil {
+		t.Fatal(err)
+	}
+	ff := p.Items[0]
+	if len(ff.Figs) != 1 || string(ff.Figs[0].Payload) != "\x06USD(" || ff.Figs[0].Version != "v1" {
+		t.Fatalf("unexpected figs: %+v", ff.Figs)
+	}
+	if ff.DefaultVersion == nil || *ff.DefaultVersion != "v1" {
+		t.Fatalf("defaultVersion = %v", ff.DefaultVersion)
+	}
+	if p.Schemas["u"] != `{"type":"string"}` {
+		t.Fatalf("schemas = %v", p.Schemas)
+	}
+}

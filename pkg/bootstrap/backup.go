@@ -54,6 +54,7 @@ func (s *S3BackupStrategy) Bootstrap(ctx context.Context, namespaces []string) (
 	return &Result{
 		FigFamilies: filteredFamilies,
 		Cursors:     cursors,
+		Schemas:     payload.Schemas,
 	}, nil
 }
 

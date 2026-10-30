@@ -85,5 +85,18 @@ func DecryptBackup(backupBytes []byte, privateKey any) (*BackupPayload, error) {
 	if err := json.Unmarshal([]byte(jsonPayload), &payload); err != nil {
 		return nil, fmt.Errorf("failed to parse payload: %w", err)
 	}
+	// The (now authenticated) v3 public section also lists every schema, including
+	// referenced ones that no item points at directly.
+	pub, err := backup.ParsePublicSection()
+	if err != nil {
+		return nil, err
+	}
+	if pub != nil {
+		for uri, s := range pub.Schemas {
+			if err := payload.addSchema(uri, s); err != nil {
+				return nil, err
+			}
+		}
+	}
 	return &payload, nil
 }

@@ -194,3 +194,18 @@ func TestHTTPTransport_FetchUpdateWaitSendsLongPollHeader(t *testing.T) {
 		t.Errorf("long-poll headers = %q, want [\"30\" \"\"]", got)
 	}
 }
+
+func TestHTTPTransport_TrailingSlashBaseURL(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	tr := NewHTTPTransport(server.Client(), server.URL+"/api/", NewSharedSecretTokenProvider("s"), "env")
+	_, _ = tr.FetchInitial(context.Background(), &model.InitialFetchRequest{Namespace: "ns", EnvironmentID: "env"})
+	if gotPath != "/api/data/initial" {
+		t.Fatalf("expected path /api/data/initial, got %q", gotPath)
+	}
+}

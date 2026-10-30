@@ -14,6 +14,8 @@ type BackupPayload struct {
 	GeneratedAt string            `json:"generatedAt"`
 	SyncToken   string            `json:"syncToken"`
 	Items       []model.FigFamily `json:"items"`
+	// Schemas maps schema URI to schema text, from the items and the v3 public section.
+	Schemas map[string]string `json:"-"`
 }
 
 type S3BackupService struct {
