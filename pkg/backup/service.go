@@ -39,13 +39,16 @@ func (s *S3BackupService) LoadBackup(ctx context.Context) (*BackupPayload, error
 	}
 
 	// 1. Load Private Key
-	privateKey, err := LoadPrivateKey(s.cfg.AuthPrivateKey)
+	// Backups are encrypted to the X25519 encryption key. Only fall back to the auth key when no
+	// encryption key is configured: a valid Ed25519 auth key always loads, so trying it first
+	// would silently pick the wrong key whenever both are set.
+	keyHex := s.cfg.EncryptionPrivateKey
+	if keyHex == "" {
+		keyHex = s.cfg.AuthPrivateKey
+	}
+	privateKey, err := LoadPrivateKey(keyHex)
 	if err != nil {
-		// Fallback to encryption key if auth key not sufficient
-		privateKey, err = LoadPrivateKey(s.cfg.EncryptionPrivateKey)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load private key: %w", err)
-		}
+		return nil, fmt.Errorf("failed to load private key: %w", err)
 	}
 
 	// 2. Calculate Fingerprint
