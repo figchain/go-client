@@ -1,13 +1,13 @@
 package backup
 
 import (
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 
 	"github.com/figchain/go-client/pkg/encryption"
+	"golang.org/x/crypto/curve25519"
 )
 
 // LoadPrivateKey loads an Ed25519 or X25519 private key from a hex string.
@@ -24,22 +24,21 @@ func LoadPrivateKey(hexKey string) (any, error) {
 	return nil, fmt.Errorf("invalid private key length: got %d, want 32 or 64", len(keyBytes))
 }
 
-// CalculateKeyFingerprint calculates the SHA-256 fingerprint of the public key.
+// CalculateKeyFingerprint returns the lowercase hex SHA-256 of the raw 32-byte
+// X25519 public key derived from the private key. For 64-byte keys the first
+// 32 bytes are used as the X25519 private key (consistent with DecryptAesKey).
 func CalculateKeyFingerprint(key any) (string, error) {
 	keyBytes, ok := key.([]byte)
 	if !ok {
 		return "", fmt.Errorf("invalid key type")
 	}
-
-	var pubBytes []byte
-	if len(keyBytes) == 32 {
-		// Assume seed, derive pub
-		priv := ed25519.NewKeyFromSeed(keyBytes)
-		pubBytes = priv.Public().(ed25519.PublicKey)
-	} else if len(keyBytes) == 64 {
-		pubBytes = keyBytes[32:]
-	} else {
+	if len(keyBytes) != 32 && len(keyBytes) != 64 {
 		return "", fmt.Errorf("invalid key length for fingerprint derivation")
+	}
+
+	pubBytes, err := curve25519.X25519(keyBytes[:32], curve25519.Basepoint)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive X25519 public key: %w", err)
 	}
 
 	hash := sha256.Sum256(pubBytes)
@@ -64,14 +63,19 @@ func DecryptAesKey(encryptedKeyBase64 string, privateKey any) ([]byte, error) {
 	return encryption.DecryptX25519(blob, privBytes)
 }
 
-// DecryptData decrypts the payload using AES-GCM.
+// DecryptData decrypts the payload using AES-GCM (no AAD, as used by v2 backups).
 func DecryptData(encryptedDataBase64 string, aesKey []byte) (string, error) {
+	return DecryptDataWithAAD(encryptedDataBase64, aesKey, nil)
+}
+
+// DecryptDataWithAAD decrypts the payload using AES-GCM, authenticating aad.
+func DecryptDataWithAAD(encryptedDataBase64 string, aesKey []byte, aad []byte) (string, error) {
 	blob, err := base64.StdEncoding.DecodeString(encryptedDataBase64)
 	if err != nil {
 		return "", fmt.Errorf("invalid data base64: %w", err)
 	}
 
-	plaintext, err := encryption.DecryptAESGCM(blob, aesKey)
+	plaintext, err := encryption.DecryptAESGCMWithAAD(blob, aesKey, aad)
 	if err != nil {
 		return "", err
 	}

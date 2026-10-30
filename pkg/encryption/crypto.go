@@ -79,6 +79,13 @@ func SignEd25519(message []byte, privateKeyHex string) ([]byte, error) {
 // DecryptAESGCM decrypts data using AES-GCM.
 // Format: IV (12 bytes) || Ciphertext
 func DecryptAESGCM(packedData []byte, key []byte) ([]byte, error) {
+	return DecryptAESGCMWithAAD(packedData, key, nil)
+}
+
+// DecryptAESGCMWithAAD decrypts data using AES-GCM, authenticating the given
+// additional data (may be nil).
+// Format: IV (12 bytes) || Ciphertext
+func DecryptAESGCMWithAAD(packedData []byte, key []byte, aad []byte) ([]byte, error) {
 	if len(packedData) < 12 {
 		return nil, fmt.Errorf("data too short")
 	}
@@ -93,5 +100,5 @@ func DecryptAESGCM(packedData []byte, key []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return gcm.Open(nil, iv, ciphertext, nil)
+	return gcm.Open(nil, iv, ciphertext, aad)
 }

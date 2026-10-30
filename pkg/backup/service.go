@@ -2,20 +2,12 @@ package backup
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 
 	fc_config "github.com/figchain/go-client/pkg/config"
 	"github.com/figchain/go-client/pkg/model"
 )
-
-type BackupFile struct {
-	Version        string `json:"version"`
-	KeyFingerprint string `json:"keyFingerprint"`
-	EncryptedKey   string `json:"encryptedKey"`
-	EncryptedData  string `json:"encryptedData"`
-}
 
 type BackupPayload struct {
 	TenantID    string            `json:"tenantId"`
@@ -74,28 +66,5 @@ func (s *S3BackupService) LoadBackup(ctx context.Context) (*BackupPayload, error
 		return nil, fmt.Errorf("failed to read backup: %w", err)
 	}
 
-	var backup BackupFile
-	if err := json.Unmarshal(backupBytes, &backup); err != nil {
-		return nil, fmt.Errorf("failed to parse backup file: %w", err)
-	}
-
-	// 4. Decrypt AES Key
-	aesKey, err := DecryptAesKey(backup.EncryptedKey, privateKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt AES key: %w", err)
-	}
-
-	// 5. Decrypt Data
-	jsonPayload, err := DecryptData(backup.EncryptedData, aesKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt payload: %w", err)
-	}
-
-	// 6. Parse Payload
-	var payload BackupPayload
-	if err := json.Unmarshal([]byte(jsonPayload), &payload); err != nil {
-		return nil, fmt.Errorf("failed to parse payload: %w", err)
-	}
-
-	return &payload, nil
+	return DecryptBackup(backupBytes, privateKey)
 }
